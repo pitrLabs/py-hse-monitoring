@@ -3,10 +3,11 @@ WORKDIR /app
 
 COPY . /app/
 
-RUN apt-get update && apt-get install -y \
-    curl gcc g++ make cmake pkg-config \
-    libssl-dev libsasl2-dev \
-    bash
+RUN apk update && apk add --no-cache \
+    curl gcc g++ make cmake pkgconfig \
+    openssl-dev cyrus-sasl-dev \
+    bash \
+    musl-dev linux-headers
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
