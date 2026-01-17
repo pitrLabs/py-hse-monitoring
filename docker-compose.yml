@@ -4,7 +4,7 @@ services:
   app:
     image: be-hse-monitoring:1.0.0
     container_name: cont-be-hse-monitoring
-    command: uv run fastapi dev app/main.py --host 0.0.0.0 --port 8001 --reload
+    command: uv run fastapi dev main.py --host 0.0.0.0 --port 8001 --reload
     volumes:
       - .:/app
     ports:
