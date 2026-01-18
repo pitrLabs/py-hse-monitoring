@@ -1,10 +1,17 @@
 from fastapi import FastAPI
 from app.database import init_db
+from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, users, roles
 
 app = FastAPI(title="HSE Object Detection Monitoring",
               description="User Management with Authentication, Roles, and Permissions",
               version="1.0.0")
+
+app.add_middleware(CORSMiddleware,
+                   allow_credentials=True,
+                   allow_origins=["*"],
+                   allow_methods=["*"],
+                   allow_headers=["*"])
 
 @app.on_event("startup")
 def startup_event():
