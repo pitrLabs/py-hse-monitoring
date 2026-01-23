@@ -1,11 +1,12 @@
 from typing import List
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import get_current_user, get_current_superuser
 from app.database import get_db
 from app.models import VideoSource, User
+from app.services.mediamtx import add_stream_path, remove_stream_path, update_stream_path
 
 router = APIRouter(prefix="/video-sources", tags=["Video Sources"])
 
@@ -47,13 +48,13 @@ def get_video_source(
 
 
 @router.post("/", response_model=schemas.VideoSourceResponse, status_code=status.HTTP_201_CREATED)
-def create_video_source(
+async def create_video_source(
     video_source_data: schemas.VideoSourceCreate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
 ):
     """Create a new video source. Only for superusers (admins)."""
-    print(f"Received data: {video_source_data}")
     # Check if stream_name already exists
     existing = db.query(VideoSource).filter(VideoSource.stream_name == video_source_data.stream_name).first()
     if existing:
@@ -77,13 +78,18 @@ def create_video_source(
     db.commit()
     db.refresh(db_video_source)
 
+    # Sync with MediaMTX in background
+    if db_video_source.is_active:
+        background_tasks.add_task(add_stream_path, db_video_source.stream_name, db_video_source.url)
+
     return db_video_source
 
 
 @router.put("/{video_source_id}", response_model=schemas.VideoSourceResponse)
-def update_video_source(
+async def update_video_source(
     video_source_id: UUID,
     video_source_update: schemas.VideoSourceUpdate,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
 ):
@@ -95,6 +101,10 @@ def update_video_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Video source not found"
         )
+
+    old_stream_name = video_source.stream_name
+    old_url = video_source.url
+    old_is_active = video_source.is_active
 
     if video_source_update.name is not None:
         video_source.name = video_source_update.name
@@ -129,12 +139,32 @@ def update_video_source(
     db.commit()
     db.refresh(video_source)
 
+    # Sync with MediaMTX in background
+    stream_name_changed = old_stream_name != video_source.stream_name
+    url_changed = old_url != video_source.url
+    status_changed = old_is_active != video_source.is_active
+
+    if stream_name_changed:
+        # Remove old path, add new path
+        background_tasks.add_task(remove_stream_path, old_stream_name)
+        if video_source.is_active:
+            background_tasks.add_task(add_stream_path, video_source.stream_name, video_source.url)
+    elif url_changed and video_source.is_active:
+        # Update existing path
+        background_tasks.add_task(update_stream_path, video_source.stream_name, video_source.url)
+    elif status_changed:
+        if video_source.is_active:
+            background_tasks.add_task(add_stream_path, video_source.stream_name, video_source.url)
+        else:
+            background_tasks.add_task(remove_stream_path, video_source.stream_name)
+
     return video_source
 
 
 @router.delete("/{video_source_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_video_source(
+async def delete_video_source(
     video_source_id: UUID,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
 ):
@@ -147,15 +177,21 @@ def delete_video_source(
             detail="Video source not found"
         )
 
+    stream_name = video_source.stream_name
+
     db.delete(video_source)
     db.commit()
+
+    # Remove from MediaMTX in background
+    background_tasks.add_task(remove_stream_path, stream_name)
 
     return None
 
 
 @router.patch("/{video_source_id}/toggle", response_model=schemas.VideoSourceResponse)
-def toggle_video_source(
+async def toggle_video_source(
     video_source_id: UUID,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
 ):
@@ -172,4 +208,25 @@ def toggle_video_source(
     db.commit()
     db.refresh(video_source)
 
+    # Sync with MediaMTX in background
+    if video_source.is_active:
+        background_tasks.add_task(add_stream_path, video_source.stream_name, video_source.url)
+    else:
+        background_tasks.add_task(remove_stream_path, video_source.stream_name)
+
     return video_source
+
+
+@router.post("/sync-mediamtx", status_code=status.HTTP_200_OK)
+async def sync_mediamtx(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_superuser)
+):
+    """Sync all active video sources to MediaMTX. Only for superusers (admins)."""
+    video_sources = db.query(VideoSource).filter(VideoSource.is_active == True).all()
+
+    for vs in video_sources:
+        background_tasks.add_task(add_stream_path, vs.stream_name, vs.url)
+
+    return {"message": f"Syncing {len(video_sources)} video sources to MediaMTX"}

@@ -1,17 +1,15 @@
 # MediaMTX Configuration
 
-# General settings
-logLevel: debug
+logLevel: info
 logDestinations: [stdout]
 
-# API
+# API - untuk backend sync paths
 api: yes
 apiAddress: :9997
 
 # RTSP server
 rtsp: yes
 rtspAddress: :8554
-rtspTransport: tcp
 
 # WebRTC server
 webrtc: yes
@@ -21,9 +19,5 @@ webrtcAddress: :8889
 hls: yes
 hlsAddress: :8888
 
-# Path configurations - auto-pull RTSP streams
+# Paths akan ditambah otomatis via API dari backend
 paths:
-  test-stream-name:
-    source: rtsp://admin:mald2025@103.165.157.111:9554/PU_21D930E4/0
-    sourceProtocol: tcp
-    sourceOnDemand: no

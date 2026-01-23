@@ -5,10 +5,16 @@ services:
     image: be-hse-monitoring:1.0.0
     container_name: cont-be-hse-monitoring
     command: uv run fastapi dev main.py --host 0.0.0.0 --port 8001 --reload
+    env_file:
+      - .env
     volumes:
       - .:/app
     ports:
       - "8001:8001"
+    depends_on:
+      - mediamtx
+    networks:
+      - hse-network
 
   mediamtx:
     image: bluenviron/mediamtx:latest
@@ -17,10 +23,19 @@ services:
       - .env
     environment:
       - MTX_WEBRTCADDITIONALHOSTS=${SERVER_IP}
+    volumes:
+      - ./mediamtx.yml:/mediamtx.yml
     ports:
       - "8554:8554"   # RTSP
       - "1935:1935"   # RTMP
       - "8888:8888"   # HLS
       - "8889:8889"   # WebRTC (HTTP)
       - "8890:8890/udp" # WebRTC (UDP)
+      - "9997:9997"   # API
+    networks:
+      - hse-network
     restart: unless-stopped
+
+networks:
+  hse-network:
+    driver: bridge
