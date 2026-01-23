@@ -14,7 +14,6 @@ services:
     image: bluenviron/mediamtx:latest
     container_name: cont-mediamtx
     environment:
-      - MTX_PROTOCOLS=tcp,udp,webrtc
       - MTX_WEBRTCADDITIONALHOSTS=host.docker.internal
     ports:
       - "8554:8554"   # RTSP
