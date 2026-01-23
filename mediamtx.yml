@@ -9,8 +9,15 @@ apiAddress: :9997
 apiEncryption: no
 apiAllowOrigin: "*"
 
-# Disable API authentication
-authMethod: none
+# Authentication - internal users (for API access)
+authInternalUsers:
+  - user: any
+    pass: ""
+    permissions:
+      - action: api
+      - action: publish
+      - action: read
+      - action: playback
 
 # RTSP server
 rtsp: yes
