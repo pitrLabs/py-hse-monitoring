@@ -13,8 +13,10 @@ services:
   mediamtx:
     image: bluenviron/mediamtx:latest
     container_name: cont-mediamtx
+    env_file:
+      - .env
     environment:
-      - MTX_WEBRTCADDITIONALHOSTS=host.docker.internal
+      - MTX_WEBRTCADDITIONALHOSTS=${SERVER_IP}
     ports:
       - "8554:8554"   # RTSP
       - "1935:1935"   # RTMP
