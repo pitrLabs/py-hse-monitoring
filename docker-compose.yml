@@ -22,7 +22,7 @@ services:
     env_file:
       - .env
     environment:
-      - MTX_WEBRTCADDITIONALHOSTS=${SERVER_IP}
+      - MTX_WEBRTCADDITIONALHOSTS=${WEBRTC}
     volumes:
       - ./mediamtx.yml:/mediamtx.yml
     ports:
