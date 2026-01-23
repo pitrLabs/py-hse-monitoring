@@ -1,7 +1,7 @@
 # MediaMTX Configuration
 
 # General settings
-logLevel: info
+logLevel: debug
 logDestinations: [stdout]
 
 # API
@@ -11,6 +11,7 @@ apiAddress: :9997
 # RTSP server
 rtsp: yes
 rtspAddress: :8554
+rtspTransport: tcp
 
 # WebRTC server
 webrtc: yes
@@ -22,11 +23,9 @@ hlsAddress: :8888
 
 # Path configurations - auto-pull RTSP streams
 paths:
-  # Setiap path akan auto-pull dari source RTSP
-  # Nama path = stream_name yang di-input di admin
-
   test-stream-name:
     source: rtsp://admin:mald2025@103.165.157.111:9554/PU_21D930E4/0
+    sourceProtocol: tcp
     sourceOnDemand: yes
-    sourceOnDemandStartTimeout: 10s
-    sourceOnDemandCloseAfter: 10s
+    sourceOnDemandStartTimeout: 30s
+    sourceOnDemandCloseAfter: 30s
