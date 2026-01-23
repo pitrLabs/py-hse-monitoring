@@ -1,7 +1,7 @@
 from fastapi import FastAPI
 from app.database import init_db
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import auth, users, roles
+from app.routers import auth, users, roles, video_sources
 
 app = FastAPI(title="HSE Object Detection Monitoring",
               description="User Management with Authentication, Roles, and Permissions",
@@ -20,6 +20,7 @@ def startup_event():
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(roles.router)
+app.include_router(video_sources.router)
 
 @app.get("/")
 def root():

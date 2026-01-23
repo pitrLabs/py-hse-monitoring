@@ -58,3 +58,20 @@ class Permission(Base):
     description: Mapped[str | None] = mapped_column(String(200))
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     roles: Mapped[List["Role"]] = relationship("Role", secondary=role_permissions, back_populates="permissions", lazy="selectin")
+
+
+class VideoSource(Base):
+    __tablename__ = "video_sources"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    url: Mapped[str] = mapped_column(String(500), nullable=False)
+    stream_name: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)  # MediaMTX stream identifier
+    source_type: Mapped[str] = mapped_column(String(20), default="rtsp", nullable=False)  # rtsp, http, file
+    description: Mapped[str | None] = mapped_column(String(500))
+    location: Mapped[str | None] = mapped_column(String(200))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped["User | None"] = relationship("User", lazy="selectin")

@@ -93,3 +93,37 @@ class UserResponse(UserBase):
 class UserLogin(BaseModel):
     username: str
     password: str
+
+
+class VideoSourceBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    url: str = Field(..., min_length=1, max_length=500)
+    stream_name: str = Field(..., min_length=1, max_length=100, pattern="^[a-zA-Z0-9_-]+$")
+    source_type: str = Field(default="rtsp", pattern="^(rtsp|http|file)$")
+    description: Optional[str] = None
+    location: Optional[str] = None
+    is_active: bool = True
+
+
+class VideoSourceCreate(VideoSourceBase):
+    pass
+
+
+class VideoSourceUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    url: Optional[str] = Field(None, min_length=1, max_length=500)
+    stream_name: Optional[str] = Field(None, min_length=1, max_length=100, pattern="^[a-zA-Z0-9_-]+$")
+    source_type: Optional[str] = Field(None, pattern="^(rtsp|http|file)$")
+    description: Optional[str] = None
+    location: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class VideoSourceResponse(VideoSourceBase):
+    id: UUID
+    created_at: datetime
+    updated_at: datetime
+    created_by_id: Optional[UUID] = None
+
+    class Config:
+        from_attributes = True
