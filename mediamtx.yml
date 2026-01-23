@@ -26,6 +26,4 @@ paths:
   test-stream-name:
     source: rtsp://admin:mald2025@103.165.157.111:9554/PU_21D930E4/0
     sourceProtocol: tcp
-    sourceOnDemand: yes
-    sourceOnDemandStartTimeout: 30s
-    sourceOnDemandCloseAfter: 30s
+    sourceOnDemand: no
