@@ -6,6 +6,11 @@ logDestinations: [stdout]
 # API - untuk backend sync paths
 api: yes
 apiAddress: :9997
+apiEncryption: no
+apiAllowOrigin: "*"
+
+# Disable API authentication
+authMethod: none
 
 # RTSP server
 rtsp: yes
