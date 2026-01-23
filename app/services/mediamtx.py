@@ -1,8 +1,7 @@
 import httpx
-import os
-from typing import Optional
+from app.config import settings
 
-MEDIAMTX_API_URL = os.getenv("MEDIAMTX_API_URL", "http://mediamtx:9997")
+MEDIAMTX_API_URL = settings.mediamtx_api_url
 
 
 async def add_stream_path(stream_name: str, rtsp_url: str) -> bool:

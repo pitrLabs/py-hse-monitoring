@@ -10,7 +10,9 @@ class Settings(BaseSettings):
     app_name: str = config("APP_NAME")
     app_version: str = config("APP_VERSION")
     debug: bool = config("DEBUG", cast=bool)
-    
+    webrtc: str = config("WEBRTC", default="")
+    mediamtx_api_url: str = config("MEDIAMTX_API_URL", default="http://mediamtx:9997")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
