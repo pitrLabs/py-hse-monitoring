@@ -127,3 +127,49 @@ class VideoSourceResponse(VideoSourceBase):
 
     class Config:
         from_attributes = True
+
+
+# Alarm Schemas
+class AlarmBase(BaseModel):
+    alarm_type: str
+    alarm_name: str
+    camera_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    location: Optional[str] = None
+    confidence: float = 0.0
+    image_url: Optional[str] = None
+    video_url: Optional[str] = None
+    description: Optional[str] = None
+
+
+class AlarmCreate(AlarmBase):
+    bmapp_id: Optional[str] = None
+    raw_data: Optional[str] = None
+    alarm_time: datetime
+
+
+class AlarmResponse(AlarmBase):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    status: str
+    alarm_time: datetime
+    created_at: datetime
+    acknowledged_at: Optional[datetime] = None
+    acknowledged_by_id: Optional[UUID] = None
+    resolved_at: Optional[datetime] = None
+    resolved_by_id: Optional[UUID] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AlarmUpdate(BaseModel):
+    status: Optional[str] = Field(None, pattern="^(new|acknowledged|resolved)$")
+
+
+class AlarmFilter(BaseModel):
+    alarm_type: Optional[str] = None
+    camera_id: Optional[str] = None
+    status: Optional[str] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None

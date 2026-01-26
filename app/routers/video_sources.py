@@ -7,6 +7,12 @@ from app.auth import get_current_user, get_current_superuser
 from app.database import get_db
 from app.models import VideoSource, User
 from app.services.mediamtx import add_stream_path, remove_stream_path, update_stream_path
+from app.services.bmapp_client import (
+    sync_media_to_bmapp,
+    delete_media_from_bmapp,
+    get_bmapp_client
+)
+from app.config import settings
 
 router = APIRouter(prefix="/video-sources", tags=["Video Sources"])
 
@@ -82,6 +88,15 @@ async def create_video_source(
     if db_video_source.is_active:
         background_tasks.add_task(add_stream_path, db_video_source.stream_name, db_video_source.url)
 
+    # Sync with BM-APP in background
+    if settings.bmapp_enabled:
+        background_tasks.add_task(
+            sync_media_to_bmapp,
+            db_video_source.stream_name,
+            db_video_source.url,
+            db_video_source.description or ""
+        )
+
     return db_video_source
 
 
@@ -149,9 +164,26 @@ async def update_video_source(
         background_tasks.add_task(remove_stream_path, old_stream_name)
         if video_source.is_active:
             background_tasks.add_task(add_stream_path, video_source.stream_name, video_source.url)
+        # Sync with BM-APP - delete old, add new
+        if settings.bmapp_enabled:
+            background_tasks.add_task(delete_media_from_bmapp, old_stream_name)
+            background_tasks.add_task(
+                sync_media_to_bmapp,
+                video_source.stream_name,
+                video_source.url,
+                video_source.description or ""
+            )
     elif url_changed and video_source.is_active:
         # Update existing path
         background_tasks.add_task(update_stream_path, video_source.stream_name, video_source.url)
+        # Sync with BM-APP
+        if settings.bmapp_enabled:
+            background_tasks.add_task(
+                sync_media_to_bmapp,
+                video_source.stream_name,
+                video_source.url,
+                video_source.description or ""
+            )
     elif status_changed:
         if video_source.is_active:
             background_tasks.add_task(add_stream_path, video_source.stream_name, video_source.url)
@@ -184,6 +216,10 @@ async def delete_video_source(
 
     # Remove from MediaMTX in background
     background_tasks.add_task(remove_stream_path, stream_name)
+
+    # Remove from BM-APP in background
+    if settings.bmapp_enabled:
+        background_tasks.add_task(delete_media_from_bmapp, stream_name)
 
     return None
 
@@ -230,3 +266,95 @@ async def sync_mediamtx(
         background_tasks.add_task(add_stream_path, vs.stream_name, vs.url)
 
     return {"message": f"Syncing {len(video_sources)} video sources to MediaMTX"}
+
+
+@router.post("/sync-bmapp", status_code=status.HTTP_200_OK)
+async def sync_bmapp(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_superuser)
+):
+    """Sync all video sources to BM-APP. Only for superusers (admins)."""
+    if not settings.bmapp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BM-APP integration is disabled"
+        )
+
+    video_sources = db.query(VideoSource).all()
+
+    for vs in video_sources:
+        background_tasks.add_task(
+            sync_media_to_bmapp,
+            vs.stream_name,
+            vs.url,
+            vs.description or ""
+        )
+
+    return {"message": f"Syncing {len(video_sources)} video sources to BM-APP"}
+
+
+@router.get("/bmapp/media", status_code=status.HTTP_200_OK)
+async def get_bmapp_media(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all media/cameras from BM-APP."""
+    if not settings.bmapp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BM-APP integration is disabled"
+        )
+
+    try:
+        client = get_bmapp_client()
+        media_list = await client.get_media_list()
+        return {"media": media_list}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/bmapp/tasks", status_code=status.HTTP_200_OK)
+async def get_bmapp_tasks(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all AI tasks from BM-APP."""
+    if not settings.bmapp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BM-APP integration is disabled"
+        )
+
+    try:
+        client = get_bmapp_client()
+        task_list = await client.get_task_list()
+        return {"tasks": task_list}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
+
+
+@router.get("/bmapp/abilities", status_code=status.HTTP_200_OK)
+async def get_bmapp_abilities(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all available AI abilities from BM-APP."""
+    if not settings.bmapp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BM-APP integration is disabled"
+        )
+
+    try:
+        client = get_bmapp_client()
+        abilities = await client.get_abilities()
+        return {"abilities": abilities}
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )

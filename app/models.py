@@ -75,3 +75,27 @@ class VideoSource(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     created_by: Mapped["User | None"] = relationship("User", lazy="selectin")
+
+
+class Alarm(Base):
+    __tablename__ = "alarms"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)  # Original ID from BM-APP
+    alarm_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)  # e.g. "NoHelmet", "Intrusion"
+    alarm_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    camera_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    camera_name: Mapped[str | None] = mapped_column(String(200))
+    location: Mapped[str | None] = mapped_column(String(300))
+    confidence: Mapped[float] = mapped_column(default=0.0, nullable=False)
+    image_url: Mapped[str | None] = mapped_column(String(500))
+    video_url: Mapped[str | None] = mapped_column(String(500))
+    description: Mapped[str | None] = mapped_column(String(1000))
+    raw_data: Mapped[str | None] = mapped_column(String(5000))  # Original JSON from BM-APP
+    status: Mapped[str] = mapped_column(String(20), default="new", nullable=False)  # new, acknowledged, resolved
+    alarm_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime)
+    acknowledged_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
+    resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
