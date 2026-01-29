@@ -217,3 +217,22 @@ async def get_available_streams(
         # Return empty list on error for graceful degradation
         print(f"Failed to get streams: {e}")
         return {"streams": []}
+
+
+@router.get("/preview-channels")
+async def get_preview_channels(
+    current_user: User = Depends(get_current_user)
+):
+    """Get preview channels from BM-APP for video streaming.
+    Returns ChnGroup (channel groups) and TaskGroup (task groups).
+    This is the raw data used by BM-APP native UI for video preview."""
+    if not settings.bmapp_enabled:
+        return {"channels": {}}
+
+    try:
+        client = get_bmapp_client()
+        channels = await client.get_preview_channels()
+        return {"channels": channels}
+    except Exception as e:
+        print(f"Failed to get preview channels: {e}")
+        return {"channels": {}, "error": str(e)}

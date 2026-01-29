@@ -243,6 +243,15 @@ class BmAppClient:
                 return result.get("data", [])
             return []
 
+    async def get_preview_channels(self) -> dict:
+        """Get preview channels from BM-APP.
+        Returns ChnGroup (channel groups) and TaskGroup (task groups) for video preview.
+        """
+        result = await self._request("/app_preview_channel")
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", {})
+        return {}
+
 
 # Global client instance
 _client: Optional[BmAppClient] = None
