@@ -32,20 +32,15 @@ async def list_ai_tasks(
 ):
     """Get all AI tasks from BM-APP."""
     if not settings.bmapp_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="BM-APP integration is disabled"
-        )
+        return {"tasks": [], "bmapp_disabled": True}
 
     try:
         client = get_bmapp_client()
         tasks = await client.get_task_list()
         return {"tasks": tasks}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+        print(f"Failed to get AI tasks: {e}")
+        return {"tasks": [], "error": str(e)}
 
 
 @router.post("/", status_code=status.HTTP_201_CREATED)
@@ -136,10 +131,7 @@ async def get_ai_abilities(
 ):
     """Get all available AI detection algorithms."""
     if not settings.bmapp_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="BM-APP integration is disabled"
-        )
+        return {"abilities": []}
 
     try:
         client = get_bmapp_client()
@@ -158,10 +150,8 @@ async def get_ai_abilities(
 
         return {"abilities": simplified}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+        print(f"Failed to get abilities: {e}")
+        return {"abilities": []}
 
 
 @router.get("/media")
@@ -170,10 +160,7 @@ async def get_bmapp_media(
 ):
     """Get all media/cameras from BM-APP with their status."""
     if not settings.bmapp_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="BM-APP integration is disabled"
-        )
+        return {"media": []}
 
     try:
         client = get_bmapp_client()
@@ -195,10 +182,8 @@ async def get_bmapp_media(
 
         return {"media": simplified}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+        print(f"Failed to get media: {e}")
+        return {"media": []}
 
 
 @router.get("/streams")
@@ -208,10 +193,8 @@ async def get_available_streams(
     """Get all available WebRTC streams from ZLMediaKit.
     This helps debug which streams are actually available for playback."""
     if not settings.bmapp_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="BM-APP integration is disabled"
-        )
+        # Return empty list instead of error for graceful degradation
+        return {"streams": []}
 
     try:
         client = get_bmapp_client()
@@ -231,7 +214,6 @@ async def get_available_streams(
 
         return {"streams": simplified}
     except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+        # Return empty list on error for graceful degradation
+        print(f"Failed to get streams: {e}")
+        return {"streams": []}
