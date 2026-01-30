@@ -121,8 +121,16 @@ class VideoSourceUpdate(BaseModel):
     sound_alert: Optional[bool] = None
 
 
-class VideoSourceResponse(VideoSourceBase):
+class VideoSourceResponse(BaseModel):
+    """Response schema - no pattern validation since data already exists in DB"""
     id: UUID
+    name: str
+    url: str
+    stream_name: str  # No pattern validation for response
+    source_type: str
+    description: Optional[str] = None
+    location: Optional[str] = None
+    is_active: bool
     sound_alert: bool
     is_synced_bmapp: bool = False
     bmapp_sync_error: Optional[str] = None
