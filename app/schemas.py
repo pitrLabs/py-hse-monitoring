@@ -124,12 +124,57 @@ class VideoSourceUpdate(BaseModel):
 class VideoSourceResponse(VideoSourceBase):
     id: UUID
     sound_alert: bool
+    is_synced_bmapp: bool = False
+    bmapp_sync_error: Optional[str] = None
     created_at: datetime
     updated_at: datetime
     created_by_id: Optional[UUID] = None
 
     class Config:
         from_attributes = True
+
+
+# AI Task Schemas
+class AITaskBase(BaseModel):
+    task_name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
+
+
+class AITaskCreate(BaseModel):
+    video_source_id: UUID
+    task_name: Optional[str] = None  # Auto-generated if not provided
+    algorithms: List[int] = Field(default=[195, 5], description="Algorithm IDs, e.g. [195, 5] for helmet+person detection")
+    description: Optional[str] = None
+    auto_start: bool = True  # Automatically start the task after creation
+
+
+class AITaskUpdate(BaseModel):
+    algorithms: Optional[List[int]] = None
+    description: Optional[str] = None
+    status: Optional[str] = Field(None, pattern="^(pending|running|stopped|failed)$")
+
+
+class AITaskResponse(AITaskBase):
+    id: UUID
+    video_source_id: UUID
+    algorithms: Optional[List[int]] = None
+    status: str
+    is_synced_bmapp: bool = False
+    bmapp_sync_error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    started_at: Optional[datetime] = None
+    stopped_at: Optional[datetime] = None
+    created_by_id: Optional[UUID] = None
+    # Include video source info
+    video_source: Optional["VideoSourceResponse"] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AITaskControl(BaseModel):
+    action: str = Field(..., pattern="^(start|stop|restart)$")
 
 
 # Alarm Schemas

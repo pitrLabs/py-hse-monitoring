@@ -2,8 +2,8 @@ from datetime import datetime
 from typing import List
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Table
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, String, Table, Text
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
@@ -72,9 +72,35 @@ class VideoSource(Base):
     location: Mapped[str | None] = mapped_column(String(200))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sound_alert: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Play sound when alarm detected
+    is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Synced to BM-APP
+    bmapp_sync_error: Mapped[str | None] = mapped_column(String(500))  # Last sync error message
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    created_by: Mapped["User | None"] = relationship("User", lazy="selectin")
+    ai_tasks: Mapped[List["AITask"]] = relationship("AITask", back_populates="video_source", lazy="selectin")
+
+
+class AITask(Base):
+    """AI detection task linked to a video source"""
+    __tablename__ = "ai_tasks"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    task_name: Mapped[str] = mapped_column(String(100), unique=True, index=True, nullable=False)  # AlgTaskSession in BM-APP
+    video_source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("video_sources.id", ondelete="CASCADE"), nullable=False)
+    algorithms: Mapped[dict | None] = mapped_column(JSONB)  # List of algorithm IDs e.g. [195, 5]
+    description: Mapped[str | None] = mapped_column(String(500))
+    status: Mapped[str] = mapped_column(String(20), default="pending", nullable=False)  # pending, running, stopped, failed
+    is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Synced to BM-APP
+    bmapp_sync_error: Mapped[str | None] = mapped_column(String(500))  # Last sync error message
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    stopped_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+
+    # Relationships
+    video_source: Mapped["VideoSource"] = relationship("VideoSource", back_populates="ai_tasks", lazy="selectin")
     created_by: Mapped["User | None"] = relationship("User", lazy="selectin")
 
 

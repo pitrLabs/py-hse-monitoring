@@ -362,3 +362,92 @@ async def get_bmapp_abilities(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(e)
         )
+
+
+@router.post("/import-from-bmapp", status_code=status.HTTP_200_OK)
+async def import_from_bmapp(
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_superuser)
+):
+    """Import all media/cameras from BM-APP into our database.
+
+    This will:
+    1. Fetch all media from BM-APP
+    2. Create VideoSource entries in database (skip if stream_name exists)
+    3. Sync to MediaMTX for raw RTSP streaming
+
+    Only for superusers (admins).
+    """
+    if not settings.bmapp_enabled:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="BM-APP integration is disabled"
+        )
+
+    try:
+        client = get_bmapp_client()
+        media_list = await client.get_media_list()
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Failed to fetch media from BM-APP: {str(e)}"
+        )
+
+    imported = 0
+    skipped = 0
+    errors = []
+
+    for media in media_list:
+        media_name = media.get("MediaName", "")
+        media_url = media.get("MediaUrl", "")
+        media_desc = media.get("MediaDesc", "")
+
+        if not media_name or not media_url:
+            errors.append(f"Invalid media entry: {media}")
+            continue
+
+        # Check if already exists
+        existing = db.query(VideoSource).filter(VideoSource.stream_name == media_name).first()
+        if existing:
+            skipped += 1
+            continue
+
+        # Determine source type from URL
+        source_type = "rtsp"
+        if media_url.startswith("http"):
+            source_type = "http"
+        elif media_url.startswith("file"):
+            source_type = "file"
+
+        # Create new video source
+        try:
+            db_video_source = VideoSource(
+                name=media_name,
+                url=media_url,
+                stream_name=media_name,
+                source_type=source_type,
+                description=media_desc,
+                is_active=True,
+                is_synced_bmapp=True,
+                created_by_id=current_user.id
+            )
+            db.add(db_video_source)
+            db.commit()
+            db.refresh(db_video_source)
+
+            # Sync to MediaMTX in background
+            background_tasks.add_task(add_stream_path, db_video_source.stream_name, db_video_source.url)
+
+            imported += 1
+        except Exception as e:
+            db.rollback()
+            errors.append(f"Failed to import {media_name}: {str(e)}")
+
+    return {
+        "message": f"Import completed",
+        "imported": imported,
+        "skipped": skipped,
+        "total_from_bmapp": len(media_list),
+        "errors": errors if errors else None
+    }
