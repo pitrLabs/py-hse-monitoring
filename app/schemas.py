@@ -103,6 +103,7 @@ class VideoSourceBase(BaseModel):
     description: Optional[str] = None
     location: Optional[str] = None
     is_active: bool = True
+    sound_alert: bool = False
 
 
 class VideoSourceCreate(VideoSourceBase):
@@ -117,10 +118,12 @@ class VideoSourceUpdate(BaseModel):
     description: Optional[str] = None
     location: Optional[str] = None
     is_active: Optional[bool] = None
+    sound_alert: Optional[bool] = None
 
 
 class VideoSourceResponse(VideoSourceBase):
     id: UUID
+    sound_alert: bool
     created_at: datetime
     updated_at: datetime
     created_by_id: Optional[UUID] = None

@@ -77,6 +77,7 @@ async def create_video_source(
         description=video_source_data.description,
         location=video_source_data.location,
         is_active=video_source_data.is_active,
+        sound_alert=video_source_data.sound_alert,
         created_by_id=current_user.id
     )
 
@@ -150,6 +151,9 @@ async def update_video_source(
 
     if video_source_update.is_active is not None:
         video_source.is_active = video_source_update.is_active
+
+    if video_source_update.sound_alert is not None:
+        video_source.sound_alert = video_source_update.sound_alert
 
     db.commit()
     db.refresh(video_source)
