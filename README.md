@@ -225,3 +225,16 @@ User levels range from 1-10:
 - **10**: Administrators
 
 Superusers bypass all permission checks.
+
+```sh
+docs/
+├── 00-overview.md
+├── 01-architecture-flow.md
+├── 02-http-reporting.md
+├── 03-mqtt-control.md
+├── 04-algorithm-capability.md
+├── 05-media-channel.md
+├── 06-algorithm-task.md
+├── 07-end-to-end-flow.md
+└── 08-version-notes.md
+```

@@ -1,8 +1,9 @@
+import json
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, Request
 from sqlalchemy import desc, and_
 from sqlalchemy.orm import Session
 
@@ -10,7 +11,7 @@ from app.database import get_db
 from app.models import Alarm, User
 from app.schemas import AlarmCreate, AlarmResponse, AlarmUpdate
 from app.auth import get_current_user
-from app.services.bmapp import add_client, remove_client
+from app.services.bmapp import add_client, remove_client, broadcast_alarm, BmAppAlarmListener
 
 router = APIRouter(prefix="/alarms", tags=["alarms"])
 
@@ -235,3 +236,171 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     db.add(alarm)
     db.commit()
     return alarm
+
+
+@router.post("/test", response_model=AlarmResponse)
+async def create_test_alarm(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create a test alarm to verify the system is working"""
+    import uuid
+
+    test_alarm_data = {
+        "bmapp_id": str(uuid.uuid4()),
+        "alarm_type": "NoHelmet",
+        "alarm_name": "No Helmet Detected",
+        "camera_id": "cam_01",
+        "camera_name": "Front Gate Camera",
+        "location": "Main Entrance - Zone A",
+        "confidence": 0.92,
+        "image_url": "",
+        "video_url": "",
+        "description": "Worker detected without safety helmet in restricted area",
+        "alarm_time": datetime.utcnow().isoformat()
+    }
+
+    alarm = await save_alarm_from_bmapp(test_alarm_data, db)
+    return alarm
+
+
+@router.post("/simulate-bmapp")
+async def simulate_bmapp_alarm(
+    raw_data: dict,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Simulate receiving an alarm from BM-APP to test parsing.
+
+    Send BM-APP format:
+    {
+        "AlarmId": "uuid",
+        "TaskSession": "task_001",
+        "TaskDesc": "Helmet Detection",
+        "Time": "2024-01-15 10:30:00",
+        "Media": {
+            "MediaName": "1",
+            "MediaDesc": "Front Gate"
+        },
+        "Result": {
+            "Type": "NoHelmet",
+            "Description": "No helmet detected"
+        }
+    }
+    """
+    # Use the same parsing logic as the listener
+    listener = BmAppAlarmListener()
+    parsed = listener._parse_alarm(raw_data)
+
+    # Save to database
+    alarm = await save_alarm_from_bmapp(parsed, db)
+
+    return {
+        "message": "Alarm simulated successfully",
+        "raw_input": raw_data,
+        "parsed_output": parsed,
+        "saved_alarm_id": str(alarm.id)
+    }
+
+
+# ============================================================================
+# BM-APP HTTP REPORTING ENDPOINT (NO AUTH - Called directly by BM-APP device)
+# ============================================================================
+
+@router.post("/receive")
+async def receive_bmapp_alarm(
+    request: Request,
+    db: Session = Depends(get_db)
+):
+    """
+    Receive alarm from BM-APP via HTTP POST.
+
+    This endpoint is called by BM-APP when MetadataUrl is configured.
+    NO AUTHENTICATION required because BM-APP device cannot login.
+
+    Configure in BM-APP task:
+        MetadataUrl: "http://YOUR_BACKEND_IP:PORT/api/alarms/receive"
+
+    Expected BM-APP format:
+    {
+        "BoardId": "RJ-BOX-XXX",
+        "AlarmId": "uuid",
+        "TaskSession": "task_001",
+        "TaskDesc": "Helmet Detection",
+        "Time": "2025-01-15 10:30:00",
+        "TimeStamp": 1699426698084625,
+        "Media": {
+            "MediaName": "1",
+            "MediaUrl": "rtsp://...",
+            "MediaDesc": "H8C-1"
+        },
+        "Result": {
+            "Type": "NoHelmet",
+            "Description": "No helmet detected",
+            "Properties": [
+                {"property": "confidence", "value": 0.683594}
+            ]
+        },
+        "ImageData": "base64...",
+        "ImageDataLabeled": "base64..."
+    }
+    """
+    try:
+        raw_data = await request.json()
+
+        # Log raw alarm for debugging
+        print(f"[BM-APP HTTP] Received alarm: {json.dumps(raw_data, indent=2, default=str)[:1000]}...")
+
+        # Parse using BmAppAlarmListener
+        listener = BmAppAlarmListener()
+        parsed = listener._parse_alarm(raw_data)
+
+        print(f"[BM-APP HTTP] Parsed: type={parsed.get('alarm_type')}, camera={parsed.get('camera_name')}, conf={parsed.get('confidence')}")
+
+        # Save to database
+        alarm = await save_alarm_from_bmapp(parsed, db)
+
+        # Broadcast to WebSocket clients for real-time updates
+        await broadcast_alarm({
+            "id": str(alarm.id),
+            "bmapp_id": alarm.bmapp_id,
+            "alarm_type": alarm.alarm_type,
+            "alarm_name": alarm.alarm_name,
+            "camera_id": alarm.camera_id,
+            "camera_name": alarm.camera_name,
+            "location": alarm.location,
+            "confidence": alarm.confidence,
+            "image_url": alarm.image_url,
+            "video_url": alarm.video_url,
+            "description": alarm.description,
+            "alarm_time": alarm.alarm_time.isoformat() if alarm.alarm_time else None,
+            "status": alarm.status
+        })
+
+        print(f"[BM-APP HTTP] Alarm saved with ID: {alarm.id}")
+
+        # Return response in BM-APP expected format
+        return {
+            "Result": {
+                "Code": 0,
+                "Desc": "Alarm received successfully"
+            },
+            "AlarmId": str(alarm.id)
+        }
+
+    except json.JSONDecodeError as e:
+        print(f"[BM-APP HTTP] JSON parse error: {e}")
+        return {
+            "Result": {
+                "Code": 1,
+                "Desc": f"Invalid JSON: {str(e)}"
+            }
+        }
+    except Exception as e:
+        print(f"[BM-APP HTTP] Error processing alarm: {e}")
+        return {
+            "Result": {
+                "Code": 2,
+                "Desc": f"Error: {str(e)}"
+            }
+        }

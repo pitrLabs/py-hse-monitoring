@@ -58,7 +58,14 @@ class BmAppAlarmListener:
         """Process incoming alarm message from BM-APP"""
         try:
             data = json.loads(message)
+
+            # Debug: Log raw alarm data to understand BM-APP format
+            print(f"[BM-APP] Raw alarm received: {json.dumps(data, indent=2, default=str)[:500]}...")
+
             alarm = self._parse_alarm(data)
+
+            # Debug: Log parsed alarm
+            print(f"[BM-APP] Parsed alarm: type={alarm.get('alarm_type')}, camera={alarm.get('camera_name')}, conf={alarm.get('confidence')}")
 
             if alarm and self.on_alarm:
                 await self.on_alarm(alarm)
@@ -72,20 +79,190 @@ class BmAppAlarmListener:
             print(f"Error processing BM-APP alarm: {e}")
 
     def _parse_alarm(self, data: dict) -> dict:
-        """Parse BM-APP alarm format to our format"""
-        # BM-APP alarm format may vary, adjust based on actual data
+        """Parse BM-APP alarm format to our format
+
+        BM-APP sends alarm in this format (from documentation 02-http-reporting.md):
+        {
+          "BoardId": "RJ-BOX-XXX",
+          "AlarmId": "uuid",
+          "TaskSession": "task_001",
+          "TaskDesc": "description",
+          "Time": "YYYY-MM-DD HH:mm:ss",
+          "TimeStamp": 1699426698084625,
+          "VideoFile": "VideoId",
+          "Media": {
+            "MediaName": "1",
+            "MediaUrl": "rtsp://...",
+            "MediaDesc": "H8C-1",
+            "MediaWidth": 1920,
+            "MediaHeight": 1080
+          },
+          "Result": {
+            "Type": "NoHelmet",
+            "Description": "No helmet detected",
+            "RelativeBox": [x,y,w,h],
+            "Properties": [{"property": "confidence", "value": 0.68}]
+          },
+          "ImageData": "base64...",
+          "ImageDataLabeled": "base64...",
+          "Summary": "string"
+        }
+
+        From user's BM-APP UI observation:
+        - Alarm Type: No Helmet
+        - Alarm ID: NoHelmet (this is Result.Type)
+        - Video Source: H8C-1 - rtsp://...  (MediaDesc - MediaUrl)
+        - Confidence: 0.683594 (might be at root or in Properties)
+        """
+
+        # Extract nested objects
+        media = data.get("Media", {}) or {}
+        result = data.get("Result", {}) or {}
+        properties = result.get("Properties", []) or []
+
+        # ===== CONFIDENCE EXTRACTION =====
+        # Priority: 1) Root level 2) Result.Properties 3) Result direct
+        confidence = 0.0
+
+        # First check root level (user reported seeing confidence at root)
+        if "Confidence" in data or "confidence" in data:
+            try:
+                confidence = float(data.get("Confidence", data.get("confidence", 0)) or 0)
+            except (ValueError, TypeError):
+                pass
+
+        # Then check Result.Properties array
+        if confidence == 0:
+            for prop in properties:
+                if isinstance(prop, dict):
+                    key = prop.get("property", prop.get("Property", "")).lower()
+                    if key in ("confidence", "score", "similarity", "prob"):
+                        try:
+                            confidence = float(prop.get("value", prop.get("Value", 0)) or 0)
+                        except (ValueError, TypeError):
+                            pass
+                        break
+
+        # Check other common fields
+        if confidence == 0:
+            for field in ["score", "Score", "probability", "Probability"]:
+                if field in data:
+                    try:
+                        confidence = float(data.get(field, 0) or 0)
+                        break
+                    except (ValueError, TypeError):
+                        pass
+
+        # ===== ALARM TYPE EXTRACTION =====
+        # Priority: Result.Type > root AlarmType > root Type
+        alarm_type = (
+            result.get("Type") or
+            result.get("type") or
+            data.get("AlarmType") or
+            data.get("alarmType") or
+            data.get("Type") or
+            data.get("type") or
+            "Unknown"
+        )
+
+        # ===== ALARM NAME/DESCRIPTION =====
+        alarm_name = (
+            data.get("TaskDesc") or
+            result.get("Description") or
+            result.get("description") or
+            data.get("alarmName") or
+            data.get("AlarmName") or
+            f"{alarm_type} Detected"
+        )
+
+        # ===== CAMERA INFO EXTRACTION =====
+        # MediaDesc contains camera name like "H8C-1"
+        camera_id = str(
+            media.get("MediaName") or
+            data.get("cameraId") or
+            data.get("CameraId") or
+            data.get("channelId") or
+            ""
+        )
+
+        camera_name = (
+            media.get("MediaDesc") or
+            data.get("cameraName") or
+            data.get("CameraName") or
+            data.get("TaskDesc") or
+            ""
+        )
+
+        # Location - use MediaDesc or TaskDesc
+        location = (
+            data.get("location") or
+            data.get("Location") or
+            media.get("MediaDesc") or
+            data.get("TaskDesc") or
+            ""
+        )
+
+        # ===== IMAGE URL =====
+        image_url = (
+            data.get("imageUrl") or
+            data.get("ImageUrl") or
+            data.get("picUrl") or
+            data.get("PicUrl") or
+            data.get("LocalLabeledPath") or
+            data.get("LocalRawPath") or
+            ""
+        )
+
+        # ===== VIDEO URL =====
+        video_url = (
+            data.get("VideoFile") or
+            data.get("videoUrl") or
+            data.get("VideoUrl") or
+            ""
+        )
+
+        # ===== ALARM TIME =====
+        alarm_time = data.get("Time", "")
+        if not alarm_time:
+            timestamp_us = data.get("TimeStamp", 0)
+            if timestamp_us:
+                try:
+                    alarm_time = datetime.fromtimestamp(timestamp_us / 1_000_000).isoformat()
+                except (ValueError, OSError):
+                    alarm_time = datetime.utcnow().isoformat()
+            else:
+                alarm_time = datetime.utcnow().isoformat()
+
+        # ===== DESCRIPTION/SUMMARY =====
+        description = (
+            data.get("Summary") or
+            result.get("Description") or
+            result.get("description") or
+            data.get("description") or
+            ""
+        )
+
+        # ===== BMAPP ID =====
+        bmapp_id = str(
+            data.get("AlarmId") or
+            data.get("alarmId") or
+            data.get("id") or
+            data.get("Id") or
+            ""
+        )
+
         return {
-            "bmapp_id": str(data.get("id", "")),
-            "alarm_type": data.get("alarmType", data.get("type", "Unknown")),
-            "alarm_name": data.get("alarmName", data.get("name", "Detection Alert")),
-            "camera_id": str(data.get("cameraId", data.get("channelId", ""))),
-            "camera_name": data.get("cameraName", data.get("channelName", "")),
-            "location": data.get("location", ""),
-            "confidence": float(data.get("confidence", data.get("score", 0)) or 0),
-            "image_url": data.get("imageUrl", data.get("picUrl", "")),
-            "video_url": data.get("videoUrl", ""),
-            "description": data.get("description", data.get("desc", "")),
-            "alarm_time": data.get("alarmTime", data.get("time", datetime.utcnow().isoformat())),
+            "bmapp_id": bmapp_id,
+            "alarm_type": alarm_type,
+            "alarm_name": alarm_name,
+            "camera_id": camera_id,
+            "camera_name": camera_name,
+            "location": location,
+            "confidence": confidence,
+            "image_url": image_url,
+            "video_url": video_url,
+            "description": description,
+            "alarm_time": alarm_time,
             "raw_data": json.dumps(data)
         }
 
