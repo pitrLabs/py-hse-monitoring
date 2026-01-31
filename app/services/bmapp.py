@@ -65,7 +65,7 @@ class BmAppAlarmListener:
             alarm = self._parse_alarm(data)
 
             # Debug: Log parsed alarm
-            print(f"[BM-APP] Parsed alarm: type={alarm.get('alarm_type')}, camera={alarm.get('camera_name')}, conf={alarm.get('confidence')}")
+            print(f"[BM-APP] Parsed alarm: type={alarm.get('alarm_type')}, camera={alarm.get('camera_name')}, conf={alarm.get('confidence')}, image={alarm.get('image_url')[:50] if alarm.get('image_url') else None}...")
 
             if alarm and self.on_alarm:
                 await self.on_alarm(alarm)
@@ -187,6 +187,7 @@ class BmAppAlarmListener:
 
         camera_name = (
             media.get("MediaDesc") or
+            media.get("MediaName") or  # BM-APP often has name in MediaName when MediaDesc is empty
             data.get("cameraName") or
             data.get("CameraName") or
             data.get("TaskDesc") or
