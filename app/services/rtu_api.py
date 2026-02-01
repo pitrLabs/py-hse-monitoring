@@ -82,34 +82,110 @@ class RTUAPIClient:
             raise
 
 
+def parse_coordinate_string(coord_str: str) -> tuple:
+    """
+    Parse coordinate string in various formats:
+    - "-7.538173,110.589176" (standard)
+    - "-7,2831381, 109,0254788" (comma as decimal separator)
+    - " -6,8697800, 108,8380210" (with spaces)
+    - "-7. 0173493,110.3571547" (space after decimal point)
+    """
+    if not coord_str or not isinstance(coord_str, str):
+        return 0.0, 0.0
+
+    # Clean up the string - remove spaces around/within numbers
+    coord_str = coord_str.strip()
+
+    # Remove spaces that appear after decimal points or within numbers
+    # e.g., "-7. 0173493" -> "-7.0173493"
+    import re
+    coord_str = re.sub(r'(\d)\s+(\d)', r'\1\2', coord_str)  # "7. 01" -> "7.01"
+    coord_str = re.sub(r'\.\s+', '.', coord_str)  # ". " -> "."
+    coord_str = re.sub(r'\s+\.', '.', coord_str)  # " ." -> "."
+
+    lat, lng = 0.0, 0.0
+
+    # Try to detect format and parse
+    try:
+        # Check if it uses comma as decimal separator (European format)
+        # Pattern: has more than one comma but coordinates are separated by comma+space
+        if ", " in coord_str or " ," in coord_str:
+            # Split by comma followed by space (or space followed by comma)
+            parts = [p.strip() for p in coord_str.replace(" ,", ",").split(", ")]
+            if len(parts) == 2:
+                # Replace comma with dot for decimal (European format)
+                lat_str = parts[0].replace(",", ".")
+                lng_str = parts[1].replace(",", ".")
+                lat, lng = float(lat_str), float(lng_str)
+
+        # Standard format: comma separates lat and lng
+        elif "," in coord_str:
+            parts = coord_str.split(",")
+            if len(parts) == 2:
+                lat, lng = float(parts[0].strip()), float(parts[1].strip())
+            elif len(parts) == 4:
+                # Format like "-7,2831381, 109,0254788" parsed as 4 parts
+                # Reconstruct: parts[0]+"."+parts[1] and parts[2]+"."+parts[3]
+                lat = float(f"{parts[0].strip()}.{parts[1].strip()}")
+                lng = float(f"{parts[2].strip()}.{parts[3].strip()}")
+
+    except (ValueError, TypeError, IndexError) as e:
+        print(f"[RTU API] Failed to parse coordinate: {coord_str}, error: {e}")
+        return 0.0, 0.0
+
+    # Validate coordinate ranges
+    # Latitude: -90 to 90, Longitude: -180 to 180
+    if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+        print(f"[RTU API] Invalid coordinate range: {coord_str} -> lat={lat}, lng={lng}")
+        return 0.0, 0.0
+
+    return lat, lng
+
+
 def parse_keypoint(data: Dict[str, Any]) -> Dict[str, Any]:
     """Parse keypoint data from API response"""
-    # Try different field names for coordinates
-    lat = (
-        data.get("latitude") or
-        data.get("lat") or
-        data.get("Latitude") or
-        data.get("y") or
-        0.0
-    )
-    lng = (
-        data.get("longitude") or
-        data.get("lng") or
-        data.get("lon") or
-        data.get("Longitude") or
-        data.get("x") or
-        0.0
-    )
+    lat = 0.0
+    lng = 0.0
 
-    # Try to convert to float
-    try:
-        lat = float(lat) if lat else 0.0
-        lng = float(lng) if lng else 0.0
-    except (ValueError, TypeError):
-        lat, lng = 0.0, 0.0
+    # First try KOORDINAT_GPS field (RTU API format)
+    koordinat_gps = data.get("KOORDINAT_GPS") or data.get("koordinat_gps")
+    if koordinat_gps:
+        lat, lng = parse_coordinate_string(koordinat_gps)
 
-    # Get name from various fields
+    # Fallback to separate lat/lng fields
+    if lat == 0.0 and lng == 0.0:
+        lat = (
+            data.get("latitude") or
+            data.get("lat") or
+            data.get("Latitude") or
+            data.get("y") or
+            0.0
+        )
+        lng = (
+            data.get("longitude") or
+            data.get("lng") or
+            data.get("lon") or
+            data.get("Longitude") or
+            data.get("x") or
+            0.0
+        )
+
+        # Try to convert to float
+        try:
+            lat = float(lat) if lat else 0.0
+            lng = float(lng) if lng else 0.0
+        except (ValueError, TypeError):
+            lat, lng = 0.0, 0.0
+
+        # Validate coordinate ranges for fallback values
+        if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+            print(f"[RTU API] Invalid fallback coordinate range: lat={lat}, lng={lng}")
+            lat, lng = 0.0, 0.0
+
+    # Get name from various fields (RTU API uses KEYPOINT_NAME or KEYPOINT_SCADA)
     name = (
+        data.get("KEYPOINT_NAME") or
+        data.get("KEYPOINT_SCADA") or
         data.get("name") or
         data.get("Name") or
         data.get("keypoint_name") or
@@ -118,48 +194,68 @@ def parse_keypoint(data: Dict[str, Any]) -> Dict[str, Any]:
         f"Keypoint {data.get('id', 'Unknown')}"
     )
 
-    # Get ID
+    # Clean up empty names
+    if not name or name.strip() == "":
+        name = data.get("KEYPOINT_SCADA") or f"Keypoint-{data.get('FEEDER_01', 'Unknown')}"
+
+    # Get ID (RTU API doesn't have explicit ID, use KEYPOINT_SCADA as unique identifier)
     external_id = str(
         data.get("id") or
         data.get("ID") or
         data.get("keypoint_id") or
+        data.get("KEYPOINT_SCADA") or
         ""
     )
 
     return {
         "external_id": external_id,
         "source": "keypoint",
-        "name": str(name),
+        "name": str(name).strip(),
         "latitude": lat,
         "longitude": lng,
-        "location_type": data.get("type") or data.get("category") or data.get("jenis"),
-        "description": data.get("description") or data.get("keterangan"),
-        "address": data.get("address") or data.get("alamat") or data.get("lokasi"),
-        "extra_data": {k: v for k, v in data.items() if k not in ["id", "name", "latitude", "longitude", "lat", "lng"]}
+        "location_type": data.get("TYPE_KP") or data.get("type") or data.get("category") or data.get("jenis"),
+        "description": data.get("STATUS") or data.get("description") or data.get("keterangan"),
+        "address": data.get("ALAMAT") or data.get("address") or data.get("alamat") or data.get("lokasi"),
+        "extra_data": {k: v for k, v in data.items() if k not in ["id", "name", "latitude", "longitude", "lat", "lng", "KOORDINAT_GPS"]}
     }
 
 
 def parse_gps_tim_har(data: Dict[str, Any]) -> Dict[str, Any]:
     """Parse GPS TIM HAR data from API response"""
-    lat = (
-        data.get("latitude") or
-        data.get("lat") or
-        data.get("Latitude") or
-        0.0
-    )
-    lng = (
-        data.get("longitude") or
-        data.get("lng") or
-        data.get("lon") or
-        data.get("Longitude") or
-        0.0
-    )
+    lat = 0.0
+    lng = 0.0
 
-    try:
-        lat = float(lat) if lat else 0.0
-        lng = float(lng) if lng else 0.0
-    except (ValueError, TypeError):
-        lat, lng = 0.0, 0.0
+    # First try KOORDINAT_GPS field
+    koordinat_gps = data.get("KOORDINAT_GPS") or data.get("koordinat_gps")
+    if koordinat_gps:
+        lat, lng = parse_coordinate_string(koordinat_gps)
+
+    # Fallback to separate lat/lng fields
+    if lat == 0.0 and lng == 0.0:
+        lat = (
+            data.get("latitude") or
+            data.get("lat") or
+            data.get("Latitude") or
+            0.0
+        )
+        lng = (
+            data.get("longitude") or
+            data.get("lng") or
+            data.get("lon") or
+            data.get("Longitude") or
+            0.0
+        )
+
+        try:
+            lat = float(lat) if lat else 0.0
+            lng = float(lng) if lng else 0.0
+        except (ValueError, TypeError):
+            lat, lng = 0.0, 0.0
+
+        # Validate coordinate ranges for fallback values
+        if not (-90 <= lat <= 90) or not (-180 <= lng <= 180):
+            print(f"[RTU API] Invalid fallback coordinate range: lat={lat}, lng={lng}")
+            lat, lng = 0.0, 0.0
 
     name = (
         data.get("name") or

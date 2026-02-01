@@ -102,6 +102,7 @@ class VideoSourceBase(BaseModel):
     source_type: str = Field(default="rtsp", pattern="^(rtsp|http|file)$")
     description: Optional[str] = None
     location: Optional[str] = None
+    group_id: Optional[UUID] = None
     is_active: bool = True
     sound_alert: bool = False
 
@@ -117,6 +118,7 @@ class VideoSourceUpdate(BaseModel):
     source_type: Optional[str] = Field(None, pattern="^(rtsp|http|file)$")
     description: Optional[str] = None
     location: Optional[str] = None
+    group_id: Optional[UUID] = None
     is_active: Optional[bool] = None
     sound_alert: Optional[bool] = None
 
@@ -130,6 +132,7 @@ class VideoSourceResponse(BaseModel):
     source_type: str
     description: Optional[str] = None
     location: Optional[str] = None
+    group_id: Optional[UUID] = None
     is_active: bool
     sound_alert: bool
     is_synced_bmapp: bool = False
@@ -304,3 +307,62 @@ class SyncResult(BaseModel):
     created: int
     updated: int
     errors: List[str] = []
+
+
+# Recording Schemas
+class RecordingBase(BaseModel):
+    file_name: str = Field(..., min_length=1, max_length=300)
+    file_url: Optional[str] = None
+    file_size: Optional[int] = None
+    duration: Optional[int] = None
+    camera_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    task_session: Optional[str] = None
+    trigger_type: str = Field(default="alarm", pattern="^(alarm|manual|schedule)$")
+    thumbnail_url: Optional[str] = None
+
+
+class RecordingCreate(RecordingBase):
+    bmapp_id: Optional[str] = None
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    alarm_id: Optional[UUID] = None
+
+
+class RecordingUpdate(BaseModel):
+    file_url: Optional[str] = None
+    file_size: Optional[int] = None
+    duration: Optional[int] = None
+    end_time: Optional[datetime] = None
+    thumbnail_url: Optional[str] = None
+    is_available: Optional[bool] = None
+
+
+class RecordingResponse(RecordingBase):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    start_time: datetime
+    end_time: Optional[datetime] = None
+    alarm_id: Optional[UUID] = None
+    is_available: bool
+    created_at: datetime
+    synced_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class RecordingFilter(BaseModel):
+    camera_id: Optional[str] = None
+    task_session: Optional[str] = None
+    trigger_type: Optional[str] = None
+    alarm_id: Optional[UUID] = None
+    start_date: Optional[datetime] = None
+    end_date: Optional[datetime] = None
+    is_available: Optional[bool] = True
+
+
+class RecordingCalendarDay(BaseModel):
+    date: str  # YYYY-MM-DD format
+    count: int
+    has_recordings: bool

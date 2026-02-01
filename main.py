@@ -3,7 +3,7 @@ from fastapi import FastAPI
 from app.database import init_db, SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, users, roles, video_sources, ai_tasks
-from app.routers import alarms, locations
+from app.routers import alarms, locations, recordings
 from app.services.bmapp import start_alarm_listener, stop_alarm_listener
 from app.routers.alarms import save_alarm_from_bmapp
 
@@ -47,6 +47,7 @@ app.include_router(video_sources.router)
 app.include_router(alarms.router)
 app.include_router(ai_tasks.router)
 app.include_router(locations.router)
+app.include_router(recordings.router)
 
 @app.get("/")
 def root():

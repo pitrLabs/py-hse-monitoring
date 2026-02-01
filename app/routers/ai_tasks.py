@@ -40,7 +40,8 @@ async def sync_task_to_bmapp(
                 media_name=media_name,
                 alg_info=[1],  # Person detection category
                 method_config=algorithms,
-                task_desc=description
+                task_desc=description,
+                enable_mp4_record=1  # Enable MP4 recording by default
             )
         elif action == "delete":
             await client.delete_task(task_name)

@@ -76,6 +76,7 @@ async def create_video_source(
         source_type=video_source_data.source_type,
         description=video_source_data.description,
         location=video_source_data.location,
+        group_id=video_source_data.group_id,
         is_active=video_source_data.is_active,
         sound_alert=video_source_data.sound_alert,
         created_by_id=current_user.id
@@ -148,6 +149,9 @@ async def update_video_source(
 
     if video_source_update.location is not None:
         video_source.location = video_source_update.location
+
+    if video_source_update.group_id is not None:
+        video_source.group_id = video_source_update.group_id
 
     if video_source_update.is_active is not None:
         video_source.is_active = video_source_update.is_active

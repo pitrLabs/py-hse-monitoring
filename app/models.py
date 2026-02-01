@@ -70,6 +70,7 @@ class VideoSource(Base):
     source_type: Mapped[str] = mapped_column(String(20), default="rtsp", nullable=False)  # rtsp, http, file
     description: Mapped[str | None] = mapped_column(String(500))
     location: Mapped[str | None] = mapped_column(String(200))
+    group_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("camera_groups.id", ondelete="SET NULL"))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sound_alert: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Play sound when alarm detected
     is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Synced to BM-APP
@@ -78,6 +79,7 @@ class VideoSource(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     created_by: Mapped["User | None"] = relationship("User", lazy="selectin")
+    group: Mapped["CameraGroup | None"] = relationship("CameraGroup", lazy="selectin")
     ai_tasks: Mapped[List["AITask"]] = relationship("AITask", back_populates="video_source", lazy="selectin")
 
 
@@ -160,3 +162,29 @@ class CameraGroup(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class Recording(Base):
+    """Video recordings from BM-APP"""
+    __tablename__ = "recordings"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)  # VideoFile ID from BM-APP
+    file_name: Mapped[str] = mapped_column(String(300), nullable=False)
+    file_url: Mapped[str | None] = mapped_column(String(500))
+    file_size: Mapped[int | None] = mapped_column()  # bytes
+    duration: Mapped[int | None] = mapped_column()  # seconds
+    camera_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    camera_name: Mapped[str | None] = mapped_column(String(200))
+    task_session: Mapped[str | None] = mapped_column(String(100))
+    start_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    end_time: Mapped[datetime | None] = mapped_column(DateTime)
+    trigger_type: Mapped[str] = mapped_column(String(50), default="alarm", nullable=False)  # alarm, manual, schedule
+    alarm_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("alarms.id", ondelete="SET NULL"), index=True)
+    thumbnail_url: Mapped[str | None] = mapped_column(String(500))
+    is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+    # Relationships
+    alarm: Mapped["Alarm | None"] = relationship("Alarm", lazy="selectin")
