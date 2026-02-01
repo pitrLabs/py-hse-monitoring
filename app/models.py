@@ -126,3 +126,37 @@ class Alarm(Base):
     acknowledged_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
     resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+
+
+class CameraLocation(Base):
+    """Camera/keypoint locations from external API (RTU UP2DJTY)"""
+    __tablename__ = "camera_locations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    external_id: Mapped[str | None] = mapped_column(String(100), index=True)  # ID from external API
+    source: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # 'keypoint' or 'gps_tim_har'
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    location_type: Mapped[str | None] = mapped_column(String(100))  # Type/category from API
+    description: Mapped[str | None] = mapped_column(String(500))
+    address: Mapped[str | None] = mapped_column(String(500))
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)  # Store extra fields from API
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    last_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+
+class CameraGroup(Base):
+    """Camera groups/folders for organizing cameras"""
+    __tablename__ = "camera_groups"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    display_name: Mapped[str | None] = mapped_column(String(100))  # Custom display name (renamed by user)
+    description: Mapped[str | None] = mapped_column(String(500))
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))

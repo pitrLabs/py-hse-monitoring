@@ -229,3 +229,78 @@ class AlarmFilter(BaseModel):
     status: Optional[str] = None
     start_date: Optional[datetime] = None
     end_date: Optional[datetime] = None
+
+
+# Camera Location Schemas
+class CameraLocationBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    location_type: Optional[str] = None
+    description: Optional[str] = None
+    address: Optional[str] = None
+
+
+class CameraLocationCreate(CameraLocationBase):
+    external_id: Optional[str] = None
+    source: str = "manual"
+    extra_data: Optional[dict] = None
+
+
+class CameraLocationUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    latitude: Optional[float] = Field(None, ge=-90, le=90)
+    longitude: Optional[float] = Field(None, ge=-180, le=180)
+    location_type: Optional[str] = None
+    description: Optional[str] = None
+    address: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class CameraLocationResponse(CameraLocationBase):
+    id: UUID
+    external_id: Optional[str] = None
+    source: str
+    extra_data: Optional[dict] = None
+    is_active: bool
+    last_synced_at: Optional[datetime] = None
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# Camera Group Schemas (for folder renaming)
+class CameraGroupBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    display_name: Optional[str] = Field(None, max_length=100)
+    description: Optional[str] = None
+
+
+class CameraGroupCreate(CameraGroupBase):
+    pass
+
+
+class CameraGroupUpdate(BaseModel):
+    display_name: Optional[str] = Field(None, max_length=100)
+    description: Optional[str] = None
+    is_active: Optional[bool] = None
+
+
+class CameraGroupResponse(CameraGroupBase):
+    id: UUID
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+    created_by_id: Optional[UUID] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SyncResult(BaseModel):
+    synced: int
+    created: int
+    updated: int
+    errors: List[str] = []

@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     bmapp_alarm_ws_url: str = config("BMAPP_ALARM_WS_URL", default="ws://103.75.84.183:2323/alarm/")
     bmapp_webrtc_url: str = config("BMAPP_WEBRTC_URL", default="http://103.75.84.183:2323/webrtc")
 
+    # External RTU API for camera locations
+    rtu_api_key: str = config("RTU_API_KEY", default="plnup2djateng@!145")
+    rtu_keypoint_url: str = config("RTU_KEYPOINT_URL", default="https://rtu.up2djty.com/api/keypoint_up2djty")
+    rtu_gps_tim_har_url: str = config("RTU_GPS_TIM_HAR_URL", default="https://rtu.up2djty.com/api/gps_tim_har")
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
