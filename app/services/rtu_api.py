@@ -220,15 +220,83 @@ def parse_keypoint(data: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def parse_google_maps_url(url: str) -> tuple:
+    """
+    Parse coordinates from Google Maps URL
+    Formats:
+    - https://www.google.com/maps?q=-7.123,110.456
+    - https://maps.google.com/?q=-7.123,110.456
+    - https://www.google.com/maps/place/-7.123,110.456
+    """
+    import re
+    if not url or not isinstance(url, str):
+        return 0.0, 0.0
+
+    # Try q= parameter format
+    match = re.search(r'[?&]q=(-?\d+\.?\d*),\s*(-?\d+\.?\d*)', url)
+    if match:
+        try:
+            lat, lng = float(match.group(1)), float(match.group(2))
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return lat, lng
+        except (ValueError, TypeError):
+            pass
+
+    # Try /place/ format
+    match = re.search(r'/place/(-?\d+\.?\d*),\s*(-?\d+\.?\d*)', url)
+    if match:
+        try:
+            lat, lng = float(match.group(1)), float(match.group(2))
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return lat, lng
+        except (ValueError, TypeError):
+            pass
+
+    # Try @lat,lng format
+    match = re.search(r'@(-?\d+\.?\d*),\s*(-?\d+\.?\d*)', url)
+    if match:
+        try:
+            lat, lng = float(match.group(1)), float(match.group(2))
+            if -90 <= lat <= 90 and -180 <= lng <= 180:
+                return lat, lng
+        except (ValueError, TypeError):
+            pass
+
+    return 0.0, 0.0
+
+
 def parse_gps_tim_har(data: Dict[str, Any]) -> Dict[str, Any]:
-    """Parse GPS TIM HAR data from API response"""
+    """Parse GPS TIM HAR data from API response
+
+    API Response format:
+    {
+        "id_alat": "KOPER_01",
+        "nama_tim": "DCC1-HAR KP 1",
+        "gps": "-7.123,110.456" or null,
+        "status_perangkat": "ON",
+        "lokasi_tim_har": "https://www.google.com/maps?q=..." or null,
+        ...
+    }
+    """
     lat = 0.0
     lng = 0.0
 
-    # First try KOORDINAT_GPS field
-    koordinat_gps = data.get("KOORDINAT_GPS") or data.get("koordinat_gps")
-    if koordinat_gps:
-        lat, lng = parse_coordinate_string(koordinat_gps)
+    # Try 'gps' field first (format: "-7.123,110.456")
+    gps_field = data.get("gps")
+    if gps_field and isinstance(gps_field, str):
+        lat, lng = parse_coordinate_string(gps_field)
+
+    # Fallback: try parsing lokasi_tim_har (Google Maps URL)
+    if lat == 0.0 and lng == 0.0:
+        lokasi_url = data.get("lokasi_tim_har")
+        if lokasi_url and isinstance(lokasi_url, str) and "google" in lokasi_url.lower():
+            lat, lng = parse_google_maps_url(lokasi_url)
+
+    # Fallback: try KOORDINAT_GPS field
+    if lat == 0.0 and lng == 0.0:
+        koordinat_gps = data.get("KOORDINAT_GPS") or data.get("koordinat_gps")
+        if koordinat_gps:
+            lat, lng = parse_coordinate_string(koordinat_gps)
 
     # Fallback to separate lat/lng fields
     if lat == 0.0 and lng == 0.0:
@@ -257,15 +325,19 @@ def parse_gps_tim_har(data: Dict[str, Any]) -> Dict[str, Any]:
             print(f"[RTU API] Invalid fallback coordinate range: lat={lat}, lng={lng}")
             lat, lng = 0.0, 0.0
 
+    # Get name - prioritize nama_tim for gps_tim_har API
     name = (
+        data.get("nama_tim") or
         data.get("name") or
         data.get("Name") or
         data.get("unit_name") or
         data.get("kendaraan") or
-        f"GPS {data.get('id', 'Unknown')}"
+        f"GPS {data.get('id_alat', data.get('id', 'Unknown'))}"
     )
 
+    # Get external_id - prioritize id_alat for gps_tim_har API
     external_id = str(
+        data.get("id_alat") or
         data.get("id") or
         data.get("ID") or
         data.get("gps_id") or
@@ -273,16 +345,20 @@ def parse_gps_tim_har(data: Dict[str, Any]) -> Dict[str, Any]:
         ""
     )
 
+    # Get status
+    status = data.get("status_perangkat", "").upper() == "ON"
+
     return {
         "external_id": external_id,
         "source": "gps_tim_har",
-        "name": str(name),
+        "name": str(name).strip(),
         "latitude": lat,
         "longitude": lng,
-        "location_type": data.get("type") or data.get("jenis") or "GPS",
-        "description": data.get("description") or data.get("keterangan"),
-        "address": data.get("address") or data.get("lokasi"),
-        "extra_data": {k: v for k, v in data.items() if k not in ["id", "name", "latitude", "longitude", "lat", "lng"]}
+        "location_type": data.get("jenis_har") or data.get("type") or "GPS Tim HAR",
+        "description": data.get("kondisi_jaringan") or data.get("description"),
+        "address": data.get("keypoint_name") or data.get("address"),
+        "is_active": status,
+        "extra_data": {k: v for k, v in data.items() if v is not None and k not in ["id", "name", "latitude", "longitude", "lat", "lng", "gps", "life_saving_rules"]}
     }
 
 

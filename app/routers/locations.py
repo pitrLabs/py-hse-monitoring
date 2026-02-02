@@ -117,7 +117,7 @@ async def cleanup_invalid_coordinates(
 
 @router.post("/sync", response_model=SyncResult)
 async def sync_locations(
-    source: str = Query("all", description="Source to sync: 'keypoint', 'gps_tim_har', or 'all'"),
+    source: str = Query("gps_tim_har", description="Source to sync: 'gps_tim_har' or 'all'"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -125,8 +125,8 @@ async def sync_locations(
     Sync camera locations from external RTU API.
     This will fetch latest data and update the database.
     """
-    if source not in ["keypoint", "gps_tim_har", "all"]:
-        raise HTTPException(status_code=400, detail="Invalid source. Use 'keypoint', 'gps_tim_har', or 'all'")
+    if source not in ["gps_tim_har", "all"]:
+        raise HTTPException(status_code=400, detail="Invalid source. Use 'gps_tim_har' or 'all'")
 
     total, created, updated, errors = await sync_locations_from_api(db, source)
 
@@ -140,7 +140,7 @@ async def sync_locations(
 
 @router.get("/external/preview")
 async def preview_external_data(
-    source: str = Query("keypoint", description="Source to preview: 'keypoint' or 'gps_tim_har'"),
+    source: str = Query("gps_tim_har", description="Source to preview: 'gps_tim_har'"),
     current_user: User = Depends(get_current_user)
 ):
     """
