@@ -5,7 +5,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, users, roles, video_sources, ai_tasks
 from app.routers import alarms, locations, recordings
 from app.services.bmapp import start_alarm_listener, stop_alarm_listener
+from app.services.mediamtx import add_stream_path
 from app.routers.alarms import save_alarm_from_bmapp
+from app.models import VideoSource
+import asyncio
 
 
 async def on_alarm_received(alarm_data: dict):
@@ -17,14 +20,42 @@ async def on_alarm_received(alarm_data: dict):
         db.close()
 
 
+async def sync_mediamtx_on_startup():
+    """Sync all active video sources to MediaMTX on startup"""
+    db = SessionLocal()
+    try:
+        sources = db.query(VideoSource).filter(VideoSource.is_active == True).all()
+        if sources:
+            print(f"[Startup] Syncing {len(sources)} video sources to MediaMTX...")
+            for source in sources:
+                success = await add_stream_path(source.stream_name, source.url)
+                if success:
+                    print(f"[Startup] Added stream: {source.stream_name}")
+                else:
+                    print(f"[Startup] Failed to add stream: {source.stream_name}")
+            print(f"[Startup] MediaMTX sync complete")
+    except Exception as e:
+        print(f"[Startup] MediaMTX sync error: {e}")
+    finally:
+        db.close()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Startup
     init_db()
     await start_alarm_listener(on_alarm_received)
+    # Sync MediaMTX after a short delay to ensure MediaMTX is ready
+    asyncio.create_task(delayed_mediamtx_sync())
     yield
     # Shutdown
     stop_alarm_listener()
+
+
+async def delayed_mediamtx_sync():
+    """Delay MediaMTX sync to ensure the server is ready"""
+    await asyncio.sleep(3)
+    await sync_mediamtx_on_startup()
 
 
 app = FastAPI(
