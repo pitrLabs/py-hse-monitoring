@@ -1,4 +1,5 @@
 from typing import List
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app import schemas
@@ -8,11 +9,11 @@ from app.auth import (
     require_permission,
 )
 from app.database import get_db
-from app.models import User, Role
+from app.models import User, Role, VideoSource
 
 router = APIRouter(prefix="/users", tags=["User Management"])
 
-@router.get("/", response_model=List[schemas.UserResponse])
+@router.get("/", response_model=List[schemas.UserWithAssignedCameras])
 def list_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db),
                _: User = Depends(require_permission("users", "read"))):
     users = db.query(User).offset(skip).limit(limit).all()
@@ -20,8 +21,8 @@ def list_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db),
     return users
 
 
-@router.get("/{user_id}", response_model=schemas.UserResponse)
-def get_user(user_id: int, db: Session = Depends(get_db),
+@router.get("/{user_id}", response_model=schemas.UserWithAssignedCameras)
+def get_user(user_id: UUID, db: Session = Depends(get_db),
              _: User = Depends(require_permission("users", "read"))):
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -55,7 +56,7 @@ def create_user(user_data: schemas.UserCreate, db: Session = Depends(get_db),
 
 
 @router.put("/{user_id}", response_model=schemas.UserResponse)
-def update_user(user_id: int, user_update: schemas.UserUpdate, db: Session = Depends(get_db),
+def update_user(user_id: UUID, user_update: schemas.UserUpdate, db: Session = Depends(get_db),
                 _: User = Depends(require_permission("users", "update"))):
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -93,14 +94,108 @@ def update_user(user_id: int, user_update: schemas.UserUpdate, db: Session = Dep
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: int, db: Session = Depends(get_db),
+def delete_user(user_id: UUID, db: Session = Depends(get_db),
                 _: User = Depends(require_permission("users", "delete"))):
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
     db.delete(user)
     db.commit()
-    
+
     return None
+
+
+# Camera Assignment Endpoints
+
+@router.get("/{user_id}/cameras", response_model=schemas.UserWithAssignedCameras)
+def get_user_cameras(user_id: UUID, db: Session = Depends(get_db),
+                     _: User = Depends(require_permission("users", "read"))):
+    """Get user with their assigned cameras"""
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    return user
+
+
+@router.put("/{user_id}/cameras", response_model=schemas.UserWithAssignedCameras)
+def assign_cameras_to_user(user_id: UUID, assignment: schemas.UserCameraAssignment,
+                           db: Session = Depends(get_db),
+                           _: User = Depends(require_permission("users", "update"))):
+    """Assign cameras to a user (replaces existing assignments)"""
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Get all video sources by IDs
+    video_sources = db.query(VideoSource).filter(
+        VideoSource.id.in_(assignment.video_source_ids)
+    ).all()
+
+    # Validate all IDs exist
+    found_ids = {vs.id for vs in video_sources}
+    missing_ids = set(assignment.video_source_ids) - found_ids
+    if missing_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Video sources not found: {[str(id) for id in missing_ids]}"
+        )
+
+    # Assign cameras to user (replaces existing)
+    user.assigned_video_sources = video_sources
+    db.commit()
+    db.refresh(user)
+
+    return user
+
+
+@router.post("/{user_id}/cameras/{video_source_id}", response_model=schemas.UserWithAssignedCameras)
+def add_camera_to_user(user_id: UUID, video_source_id: UUID,
+                       db: Session = Depends(get_db),
+                       _: User = Depends(require_permission("users", "update"))):
+    """Add a single camera to user's assignments"""
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    video_source = db.query(VideoSource).filter(VideoSource.id == video_source_id).first()
+
+    if not video_source:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video source not found")
+
+    # Add if not already assigned
+    if video_source not in user.assigned_video_sources:
+        user.assigned_video_sources.append(video_source)
+        db.commit()
+        db.refresh(user)
+
+    return user
+
+
+@router.delete("/{user_id}/cameras/{video_source_id}", response_model=schemas.UserWithAssignedCameras)
+def remove_camera_from_user(user_id: UUID, video_source_id: UUID,
+                            db: Session = Depends(get_db),
+                            _: User = Depends(require_permission("users", "update"))):
+    """Remove a camera from user's assignments"""
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    video_source = db.query(VideoSource).filter(VideoSource.id == video_source_id).first()
+
+    if not video_source:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video source not found")
+
+    # Remove if assigned
+    if video_source in user.assigned_video_sources:
+        user.assigned_video_sources.remove(video_source)
+        db.commit()
+        db.refresh(user)
+
+    return user

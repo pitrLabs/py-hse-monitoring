@@ -9,7 +9,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CameraLocation, CameraGroup, User
+from app.models import CameraLocation, CameraGroup, User, VideoSource, user_camera_group_assignments
 from app.schemas import (
     CameraLocationCreate,
     CameraLocationUpdate,
@@ -248,6 +248,177 @@ async def upsert_group(
         return new_group
 
 
+# ============ Per-User Folder Management (MUST be before /groups/{group_id} routes) ============
+
+@router.get("/groups/my", response_model=List[CameraGroupResponse])
+async def get_my_groups(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get current user's personal folders"""
+    groups = db.query(CameraGroup).filter(
+        CameraGroup.user_id == current_user.id
+    ).order_by(CameraGroup.name).all()
+    return groups
+
+
+@router.post("/groups/my", response_model=CameraGroupResponse)
+async def create_my_group(
+    name: str = Query(..., description="Folder name"),
+    display_name: Optional[str] = Query(None, description="Custom display name"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Create a personal folder for current user"""
+    existing = db.query(CameraGroup).filter(
+        CameraGroup.user_id == current_user.id,
+        CameraGroup.name == name
+    ).first()
+    if existing:
+        if display_name:
+            existing.display_name = display_name
+        db.commit()
+        db.refresh(existing)
+        return existing
+
+    new_group = CameraGroup(
+        name=name,
+        display_name=display_name or name,
+        user_id=current_user.id,
+        created_by_id=current_user.id
+    )
+    db.add(new_group)
+    db.commit()
+    db.refresh(new_group)
+    return new_group
+
+
+@router.get("/groups/my/assignments")
+async def get_my_assignments(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get current user's camera-to-group assignments as a dict {video_source_id: group_id}"""
+    rows = db.execute(
+        user_camera_group_assignments.select().where(
+            user_camera_group_assignments.c.user_id == current_user.id
+        )
+    ).fetchall()
+
+    assignments = {}
+    for row in rows:
+        assignments[str(row.video_source_id)] = str(row.group_id)
+
+    return {"assignments": assignments}
+
+
+@router.post("/groups/my/assign")
+async def assign_camera_to_my_group(
+    video_source_ids: List[UUID] = Query(..., description="Camera IDs to assign"),
+    group_id: UUID = Query(..., description="Target group ID"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Assign cameras to a personal folder for current user"""
+    group = db.query(CameraGroup).filter(
+        CameraGroup.id == group_id,
+        CameraGroup.user_id == current_user.id
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found or not owned by you")
+
+    for vs_id in video_source_ids:
+        db.execute(
+            user_camera_group_assignments.delete().where(
+                user_camera_group_assignments.c.user_id == current_user.id,
+                user_camera_group_assignments.c.video_source_id == vs_id
+            )
+        )
+        db.execute(
+            user_camera_group_assignments.insert().values(
+                user_id=current_user.id,
+                video_source_id=vs_id,
+                group_id=group_id
+            )
+        )
+
+    db.commit()
+    return {"message": f"Assigned {len(video_source_ids)} cameras to group '{group.display_name or group.name}'"}
+
+
+@router.post("/groups/my/unassign")
+async def unassign_cameras_from_my_groups(
+    video_source_ids: List[UUID] = Query(..., description="Camera IDs to unassign"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Remove cameras from their folders for current user (back to ungrouped)"""
+    for vs_id in video_source_ids:
+        db.execute(
+            user_camera_group_assignments.delete().where(
+                user_camera_group_assignments.c.user_id == current_user.id,
+                user_camera_group_assignments.c.video_source_id == vs_id
+            )
+        )
+
+    db.commit()
+    return {"message": f"Unassigned {len(video_source_ids)} cameras from groups"}
+
+
+@router.patch("/groups/my/{group_id}", response_model=CameraGroupResponse)
+async def update_my_group(
+    group_id: UUID,
+    display_name: Optional[str] = Query(None),
+    description: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Rename a personal folder"""
+    group = db.query(CameraGroup).filter(
+        CameraGroup.id == group_id,
+        CameraGroup.user_id == current_user.id
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found or not owned by you")
+
+    if display_name is not None:
+        group.display_name = display_name
+    if description is not None:
+        group.description = description
+
+    db.commit()
+    db.refresh(group)
+    return group
+
+
+@router.delete("/groups/my/{group_id}")
+async def delete_my_group(
+    group_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Delete a personal folder and remove its camera assignments"""
+    group = db.query(CameraGroup).filter(
+        CameraGroup.id == group_id,
+        CameraGroup.user_id == current_user.id
+    ).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found or not owned by you")
+
+    db.execute(
+        user_camera_group_assignments.delete().where(
+            user_camera_group_assignments.c.user_id == current_user.id,
+            user_camera_group_assignments.c.group_id == group_id
+        )
+    )
+
+    db.delete(group)
+    db.commit()
+    return {"message": "Group deleted"}
+
+
+# ============ Global Camera Groups (admin/legacy) - Dynamic routes AFTER static routes ============
+
 @router.get("/groups/{group_id}", response_model=CameraGroupResponse)
 async def get_group(
     group_id: UUID,
@@ -267,19 +438,13 @@ async def update_group(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """
-    Update a camera group (rename display name).
-    Only superadmin and manager can update groups.
-    """
+    """Update a camera group (admin only)."""
     is_manager = current_user.is_superuser or any(
         role.name.lower() in ["superadmin", "manager", "admin"]
         for role in current_user.roles
     )
     if not is_manager:
-        raise HTTPException(
-            status_code=403,
-            detail="Only superadmin and manager can rename groups"
-        )
+        raise HTTPException(status_code=403, detail="Only superadmin and manager can rename groups")
 
     group = db.query(CameraGroup).filter(CameraGroup.id == group_id).first()
     if not group:
@@ -294,20 +459,97 @@ async def update_group(
     return group
 
 
-@router.delete("/groups/{group_id}")
-async def delete_group(
+@router.get("/groups/{group_id}/cameras")
+async def get_group_cameras(
     group_id: UUID,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_superuser)
+    current_user: User = Depends(get_current_user)
 ):
-    """Delete a camera group (superuser only)"""
+    """Get all cameras in a group"""
     group = db.query(CameraGroup).filter(CameraGroup.id == group_id).first()
     if not group:
         raise HTTPException(status_code=404, detail="Group not found")
 
+    cameras = db.query(VideoSource).filter(VideoSource.group_id == group_id).all()
+    return {"group": group, "cameras": cameras, "count": len(cameras)}
+
+
+@router.delete("/groups/{group_id}")
+async def delete_group(
+    group_id: UUID,
+    force: bool = Query(False, description="Force delete even if group has cameras"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_superuser)
+):
+    """Delete a camera group (superuser only)."""
+    group = db.query(CameraGroup).filter(CameraGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Group not found")
+
+    camera_count = db.query(VideoSource).filter(VideoSource.group_id == group_id).count()
+    if camera_count > 0 and not force:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Group has {camera_count} cameras. Move them to another group first or use force=true"
+        )
+
+    if camera_count > 0 and force:
+        db.query(VideoSource).filter(VideoSource.group_id == group_id).update(
+            {VideoSource.group_id: None}
+        )
+
     db.delete(group)
     db.commit()
-    return {"message": "Group deleted"}
+    return {"message": "Group deleted", "orphaned_cameras": camera_count if force else 0}
+
+
+@router.post("/groups/{group_id}/move-cameras")
+async def move_cameras_to_group(
+    group_id: UUID,
+    camera_ids: List[UUID] = Query(..., description="List of camera IDs to move"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Move cameras to a group (admin only)."""
+    is_manager = current_user.is_superuser or any(
+        role.name.lower() in ["superadmin", "manager", "admin"]
+        for role in current_user.roles
+    )
+    if not is_manager:
+        raise HTTPException(status_code=403, detail="Only superadmin and manager can move cameras")
+
+    group = db.query(CameraGroup).filter(CameraGroup.id == group_id).first()
+    if not group:
+        raise HTTPException(status_code=404, detail="Target group not found")
+
+    updated = db.query(VideoSource).filter(VideoSource.id.in_(camera_ids)).update(
+        {VideoSource.group_id: group_id}, synchronize_session=False
+    )
+
+    db.commit()
+    return {"message": f"Moved {updated} cameras to group '{group.display_name or group.name}'"}
+
+
+@router.post("/groups/remove-cameras")
+async def remove_cameras_from_group(
+    camera_ids: List[UUID] = Query(..., description="List of camera IDs to remove from their groups"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Remove cameras from their groups (admin only)."""
+    is_manager = current_user.is_superuser or any(
+        role.name.lower() in ["superadmin", "manager", "admin"]
+        for role in current_user.roles
+    )
+    if not is_manager:
+        raise HTTPException(status_code=403, detail="Only superadmin and manager can modify camera groups")
+
+    updated = db.query(VideoSource).filter(VideoSource.id.in_(camera_ids)).update(
+        {VideoSource.group_id: None}, synchronize_session=False
+    )
+
+    db.commit()
+    return {"message": f"Removed {updated} cameras from their groups"}
 
 
 # ============ Camera Locations - Dynamic Routes Last ============

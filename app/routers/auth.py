@@ -1,11 +1,11 @@
-from datetime import timedelta
+from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import (authenticate_user, create_access_token, get_password_hash,
                       get_current_active_user, get_current_superuser, ACCESS_TOKEN_EXPIRE_MINUTES,
-                      require_permission, require_user_level)
+                      require_permission, require_user_level, generate_session_id)
 from app.database import get_db
 from app.models import User, Role
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -39,15 +39,33 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
                             detail="Incorrect username or password",
                             headers={"WWW-Authenticate": "Bearer"})
-    
+
     if not user.is_active:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Inactive user")
-    
+
+    # Generate new session ID - this invalidates any previous sessions
+    session_id = generate_session_id()
+    user.active_session_id = session_id
+    user.last_login_at = datetime.utcnow()
+    db.commit()
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
-    
+    access_token = create_access_token(
+        data={"sub": user.username},
+        expires_delta=access_token_expires,
+        session_id=session_id
+    )
+
     return {"access_token": access_token, "token_type": "bearer"}
+
+
+@router.post("/logout")
+def logout(current_user: User = Depends(get_current_active_user), db: Session = Depends(get_db)):
+    """Logout user by clearing active session ID"""
+    current_user.active_session_id = None
+    db.commit()
+    return {"message": "Successfully logged out"}
 
 
 @router.get("/me", response_model=schemas.UserResponse)

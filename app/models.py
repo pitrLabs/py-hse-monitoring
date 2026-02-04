@@ -20,6 +20,19 @@ role_permissions = Table("role_permissions",
                          Column("role_id", UUID(as_uuid=True), ForeignKey("roles.id", ondelete="CASCADE"), primary_key=True),
                          Column("permission_id", UUID(as_uuid=True), ForeignKey("permissions.id", ondelete="CASCADE"), primary_key=True))
 
+# Many-to-many relationship for camera assignment to operators
+user_video_sources = Table("user_video_sources",
+                           Base.metadata,
+                           Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+                           Column("video_source_id", UUID(as_uuid=True), ForeignKey("video_sources.id", ondelete="CASCADE"), primary_key=True))
+
+# Per-user camera-to-group assignments (each user has their own folder organization)
+user_camera_group_assignments = Table("user_camera_group_assignments",
+                                      Base.metadata,
+                                      Column("user_id", UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), primary_key=True),
+                                      Column("video_source_id", UUID(as_uuid=True), ForeignKey("video_sources.id", ondelete="CASCADE"), primary_key=True),
+                                      Column("group_id", UUID(as_uuid=True), ForeignKey("camera_groups.id", ondelete="CASCADE"), nullable=False))
+
 
 class User(Base):
     __tablename__ = "users"
@@ -32,9 +45,13 @@ class User(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     user_level: Mapped[int] = mapped_column(default=1, nullable=False)
+    active_session_id: Mapped[str | None] = mapped_column(String(64))  # Current active session - only one allowed
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime)  # Track last login time
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     roles: Mapped[List["Role"]] = relationship("Role", secondary=user_roles, back_populates="users", lazy="selectin")
+    # Assigned cameras for operators - only these cameras will be visible to the user
+    assigned_video_sources: Mapped[List["VideoSource"]] = relationship("VideoSource", secondary=user_video_sources, back_populates="assigned_users", lazy="selectin")
 
 
 class Role(Base):
@@ -78,9 +95,11 @@ class VideoSource(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
-    created_by: Mapped["User | None"] = relationship("User", lazy="selectin")
+    created_by: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], lazy="selectin")
     group: Mapped["CameraGroup | None"] = relationship("CameraGroup", lazy="selectin")
     ai_tasks: Mapped[List["AITask"]] = relationship("AITask", back_populates="video_source", lazy="selectin")
+    # Users (operators) who have access to this camera
+    assigned_users: Mapped[List["User"]] = relationship("User", secondary=user_video_sources, back_populates="assigned_video_sources", lazy="selectin")
 
 
 class AITask(Base):
@@ -151,13 +170,14 @@ class CameraLocation(Base):
 
 
 class CameraGroup(Base):
-    """Camera groups/folders for organizing cameras"""
+    """Camera groups/folders for organizing cameras - per user"""
     __tablename__ = "camera_groups"
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     display_name: Mapped[str | None] = mapped_column(String(100))  # Custom display name (renamed by user)
     description: Mapped[str | None] = mapped_column(String(500))
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), index=True)  # Owner user (NULL = global/legacy)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)

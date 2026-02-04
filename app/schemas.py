@@ -38,13 +38,13 @@ class RoleBase(BaseModel):
 
 
 class RoleCreate(RoleBase):
-    permission_ids: List[int] = []
+    permission_ids: List[UUID] = []
 
 
 class RoleUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
-    permission_ids: Optional[List[int]] = None
+    permission_ids: Optional[List[UUID]] = None
 
 
 class RoleResponse(RoleBase):
@@ -65,7 +65,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6)
     user_level: int = Field(default=1, ge=1, le=10)
-    role_ids: List[int] = []
+    role_ids: List[UUID] = []
 
 
 class UserUpdate(BaseModel):
@@ -74,7 +74,7 @@ class UserUpdate(BaseModel):
     password: Optional[str] = Field(None, min_length=6)
     is_active: Optional[bool] = None
     user_level: Optional[int] = Field(None, ge=1, le=10)
-    role_ids: Optional[List[int]] = None
+    role_ids: Optional[List[UUID]] = None
 
 
 class UserResponse(UserBase):
@@ -293,6 +293,7 @@ class CameraGroupUpdate(BaseModel):
 
 class CameraGroupResponse(CameraGroupBase):
     id: UUID
+    user_id: Optional[UUID] = None
     is_active: bool
     created_at: datetime
     updated_at: datetime
@@ -300,6 +301,17 @@ class CameraGroupResponse(CameraGroupBase):
 
     class Config:
         from_attributes = True
+
+
+class CameraGroupAssignment(BaseModel):
+    """Per-user camera-to-group assignment"""
+    video_source_id: UUID
+    group_id: UUID
+
+
+class CameraGroupAssignmentsResponse(BaseModel):
+    """Response for user's camera-group assignments"""
+    assignments: dict  # {video_source_id: group_id}
 
 
 class SyncResult(BaseModel):
@@ -366,3 +378,25 @@ class RecordingCalendarDay(BaseModel):
     date: str  # YYYY-MM-DD format
     count: int
     has_recordings: bool
+
+
+# User Camera Assignment Schemas
+class UserCameraAssignment(BaseModel):
+    """Schema for assigning cameras to a user"""
+    video_source_ids: List[UUID] = Field(..., description="List of video source IDs to assign to the user")
+
+
+class UserWithAssignedCameras(UserResponse):
+    """Extended user response with assigned cameras"""
+    assigned_video_sources: List[VideoSourceResponse] = []
+
+    class Config:
+        from_attributes = True
+
+
+class VideoSourceWithAssignedUsers(VideoSourceResponse):
+    """Extended video source response with assigned users (minimal user info)"""
+    assigned_user_ids: List[UUID] = []
+
+    class Config:
+        from_attributes = True

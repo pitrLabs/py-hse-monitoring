@@ -1,4 +1,5 @@
 import hashlib
+import secrets
 from datetime import datetime, timedelta
 from typing import Optional
 from fastapi import Depends, HTTPException, status
@@ -19,6 +20,11 @@ pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="auth/login")
 
 
+def generate_session_id() -> str:
+    """Generate a unique session ID for single-session enforcement"""
+    return secrets.token_hex(32)
+
+
 def get_password_hash(password: str) -> str:
     return pwd_context.hash(password)
 
@@ -34,16 +40,20 @@ def verify_password(plain_password: str, hashed_password: str) -> bool:
     return valid
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, session_id: Optional[str] = None) -> str:
     to_encode = data.copy()
 
     if expires_delta:
         expire = datetime.utcnow() + expires_delta
-
     else:
         expire = datetime.utcnow() + timedelta(minutes=15)
 
     to_encode.update({"exp": expire})
+
+    # Include session_id in token for single-session enforcement
+    if session_id:
+        to_encode.update({"sid": session_id})
+
     encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
     return encoded_jwt
@@ -66,9 +76,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
                                           detail="Could not validate credentials",
                                           headers={"WWW-Authenticate": "Bearer"})
 
+    # Special exception for session invalidation (logged in from another device)
+    session_invalid_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="session_invalid",  # Frontend will detect this specific message
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         username: str = payload.get("sub")
+        session_id: str = payload.get("sid")  # Session ID from token
 
         if username is None:
             raise credentials_exception
@@ -77,11 +95,15 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
 
     except JWTError:
         raise credentials_exception
-    
+
     user = db.query(User).filter(User.username == token_data.username).first()
 
     if user is None:
         raise credentials_exception
+
+    # Validate session_id - if it doesn't match, user logged in from another device
+    if session_id and user.active_session_id and session_id != user.active_session_id:
+        raise session_invalid_exception
 
     return user
 

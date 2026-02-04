@@ -1,4 +1,5 @@
 from typing import List
+from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from app import schemas
@@ -34,7 +35,7 @@ def create_permission(permission_data: schemas.PermissionCreate, db: Session = D
 
 
 @router.delete("/permissions/{permission_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_permission(permission_id: int, db: Session = Depends(get_db),
+def delete_permission(permission_id: UUID, db: Session = Depends(get_db),
                       _: User = Depends(get_current_superuser)):
     permission = db.query(Permission).filter(Permission.id == permission_id).first()
 
@@ -56,7 +57,7 @@ def list_roles(skip: int = 0, limit: int = 100, db: Session = Depends(get_db),
 
 
 @router.get("/{role_id}", response_model=schemas.RoleResponse)
-def get_role(role_id: int, db: Session = Depends(get_db),
+def get_role(role_id: UUID, db: Session = Depends(get_db),
              _: User = Depends(require_permission("roles", "read"))):
     role = db.query(Role).filter(Role.id == role_id).first()
 
@@ -86,7 +87,7 @@ def create_role(role_data: schemas.RoleCreate, db: Session = Depends(get_db),
 
 
 @router.put("/{role_id}", response_model=schemas.RoleResponse)
-def update_role(role_id: int, role_update: schemas.RoleUpdate, db: Session = Depends(get_db),
+def update_role(role_id: UUID, role_update: schemas.RoleUpdate, db: Session = Depends(get_db),
                 _: User = Depends(require_permission("roles", "update"))):
     role = db.query(Role).filter(Role.id == role_id).first()
 
@@ -117,7 +118,7 @@ def update_role(role_id: int, role_update: schemas.RoleUpdate, db: Session = Dep
 
 
 @router.delete("/{role_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_role(role_id: int, db: Session = Depends(get_db),
+def delete_role(role_id: UUID, db: Session = Depends(get_db),
                 _: User = Depends(require_permission("roles", "delete"))):
     role = db.query(Role).filter(Role.id == role_id).first()
 

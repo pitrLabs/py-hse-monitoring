@@ -217,14 +217,78 @@ def admin_only(
 
 ## User Levels
 
-User levels range from 1-10:
+User levels range from 1-10 and determine access hierarchy in the system:
 
-- **1-3**: Basic users
-- **4-6**: Advanced users
-- **7-9**: Managers/Supervisors
-- **10**: Administrators
+| Level | Nama | Deskripsi | Akses Kamera |
+|-------|------|-----------|--------------|
+| 1 | Operator Junior | Operator level dasar | Hanya kamera yang di-assign |
+| 2 | Operator | Operator standar | Hanya kamera yang di-assign |
+| 3 | Operator Senior | Operator berpengalaman | Hanya kamera yang di-assign |
+| 4 | Supervisor Junior | Supervisor pemula | Hanya kamera yang di-assign |
+| 5 | Supervisor | Supervisor standar | Hanya kamera yang di-assign |
+| 6 | Supervisor Senior | Supervisor berpengalaman | Hanya kamera yang di-assign |
+| 7 | Manager Junior | Manager pemula | Semua kamera |
+| 8 | Manager | Manager standar | Semua kamera |
+| 9 | Manager Senior | Manager berpengalaman | Semua kamera |
+| 10 | Administrator | Full system access | Semua kamera |
 
-Superusers bypass all permission checks.
+### Akses Kamera Berdasarkan Level & Role
+
+Sistem menggunakan kombinasi **User Level** dan **Role** untuk menentukan akses:
+
+1. **Superuser / Admin** → Akses semua kamera
+2. **Role: Manager, Admin, Superadmin** → Akses semua kamera
+3. **Role: Operator / Viewer** → Hanya kamera yang di-assign
+
+### Cara Assign Kamera ke Operator
+
+1. Buka **Admin → Users**
+2. Cari user dengan role Operator
+3. Klik icon **kamera** di kolom Actions
+4. Pilih kamera yang ingin di-assign
+5. Klik **Save**
+
+### Fitur Berdasarkan Level
+
+| Fitur | Level 1-3 | Level 4-6 | Level 7-9 | Level 10 |
+|-------|-----------|-----------|-----------|----------|
+| View Monitor | ✅ (assigned) | ✅ (assigned) | ✅ (all) | ✅ (all) |
+| View Monitoring AI | ✅ (assigned) | ✅ (assigned) | ✅ (all) | ✅ (all) |
+| View Events/Alarms | ✅ | ✅ | ✅ | ✅ |
+| Acknowledge Alarms | ❌ | ✅ | ✅ | ✅ |
+| Resolve Alarms | ❌ | ❌ | ✅ | ✅ |
+| Manage Video Sources | ❌ | ❌ | ❌ | ✅ |
+| Manage AI Tasks | ❌ | ❌ | ❌ | ✅ |
+| Manage Users | ❌ | ❌ | ❌ | ✅ |
+| Manage Roles | ❌ | ❌ | ❌ | ✅ |
+
+### Contoh Penggunaan di Code
+
+```python
+from app.auth import require_user_level
+
+# Minimal level 5 untuk akses endpoint ini
+@router.get("/supervisor-only")
+def supervisor_endpoint(
+    _: User = Depends(require_user_level(5))
+):
+    pass
+
+# Minimal level 8 untuk manager
+@router.post("/manager-action")
+def manager_action(
+    _: User = Depends(require_user_level(8))
+):
+    pass
+```
+
+### Single Session Authentication
+
+Setiap user hanya bisa login di 1 device/browser. Jika login di tempat lain:
+- Session sebelumnya otomatis ter-logout
+- User akan melihat pesan "Sesi Anda telah berakhir karena login dari perangkat lain"
+
+Superusers (`is_superuser=True`) bypass semua permission checks.
 
 ```sh
 docs/

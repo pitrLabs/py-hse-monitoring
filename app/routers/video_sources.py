@@ -17,6 +17,17 @@ from app.config import settings
 router = APIRouter(prefix="/video-sources", tags=["Video Sources"])
 
 
+def is_user_manager_or_above(user: User) -> bool:
+    """Check if user is superuser or has manager role"""
+    if user.is_superuser:
+        return True
+    # Check if user has 'manager' or 'superadmin' role
+    for role in user.roles:
+        if role.name.lower() in ('manager', 'superadmin', 'admin'):
+            return True
+    return False
+
+
 @router.get("/", response_model=List[schemas.VideoSourceResponse])
 def list_video_sources(
     skip: int = 0,
@@ -25,8 +36,21 @@ def list_video_sources(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """List all video sources. Available for all authenticated users."""
-    query = db.query(VideoSource)
+    """
+    List video sources.
+    - Superusers/Managers: see all video sources
+    - Operators: only see assigned video sources
+    """
+    # Check if user is manager or above
+    if is_user_manager_or_above(current_user):
+        # Managers and superusers see all
+        query = db.query(VideoSource)
+    else:
+        # Operators only see assigned cameras
+        assigned_ids = [vs.id for vs in current_user.assigned_video_sources]
+        if not assigned_ids:
+            return []  # No cameras assigned
+        query = db.query(VideoSource).filter(VideoSource.id.in_(assigned_ids))
 
     if is_active is not None:
         query = query.filter(VideoSource.is_active == is_active)
@@ -48,6 +72,15 @@ def get_video_source(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Video source not found"
+        )
+
+    # Check access for non-managers
+    if not is_user_manager_or_above(current_user):
+        assigned_ids = [vs.id for vs in current_user.assigned_video_sources]
+        if video_source.id not in assigned_ids:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this camera"
         )
 
     return video_source
