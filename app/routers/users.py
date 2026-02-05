@@ -42,7 +42,7 @@ def create_user(user_data: schemas.UserCreate, db: Session = Depends(get_db),
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
     db_user = User(username=user_data.username, email=user_data.email, full_name=user_data.full_name,
-                   hashed_password=get_password_hash(user_data.password), user_level=user_data.user_level)
+                   hashed_password=get_password_hash(user_data.password))
 
     if user_data.role_ids:
         roles = db.query(Role).filter(Role.id.in_(user_data.role_ids)).all()
@@ -79,9 +79,6 @@ def update_user(user_id: UUID, user_update: schemas.UserUpdate, db: Session = De
     
     if user_update.is_active is not None:
         user.is_active = user_update.is_active
-    
-    if user_update.user_level is not None:
-        user.user_level = user_update.user_level
     
     if user_update.role_ids is not None:
         roles = db.query(Role).filter(Role.id.in_(user_update.role_ids)).all()

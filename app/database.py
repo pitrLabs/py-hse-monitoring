@@ -46,3 +46,59 @@ def _upgrade_schema():
                 ))
                 conn.commit()
                 print("[Migration] Done: user_id column added to camera_groups")
+
+        # Clean up deprecated roles: migrate 'admin' users to 'superadmin', remove 'admin' and 'viewer'
+        if 'roles' in inspector.get_table_names():
+            deprecated = conn.execute(text(
+                "SELECT id, name FROM roles WHERE name IN ('admin', 'viewer')"
+            )).fetchall()
+            deprecated_names = [r[1] for r in deprecated]
+
+            if deprecated_names:
+                print(f"[Migration] Cleaning up deprecated roles: {deprecated_names}")
+
+                if 'admin' in deprecated_names:
+                    # Get superadmin role id
+                    sa = conn.execute(text(
+                        "SELECT id FROM roles WHERE name = 'superadmin'"
+                    )).fetchone()
+                    admin_role = conn.execute(text(
+                        "SELECT id FROM roles WHERE name = 'admin'"
+                    )).fetchone()
+
+                    if sa and admin_role:
+                        # Reassign users from 'admin' to 'superadmin' (skip if already assigned)
+                        conn.execute(text(
+                            "UPDATE user_roles SET role_id = :sa_id "
+                            "WHERE role_id = :admin_id "
+                            "AND user_id NOT IN (SELECT user_id FROM user_roles WHERE role_id = :sa_id)"
+                        ), {"sa_id": sa[0], "admin_id": admin_role[0]})
+                        # Delete remaining admin role assignments (duplicates)
+                        conn.execute(text(
+                            "DELETE FROM user_roles WHERE role_id = :admin_id"
+                        ), {"admin_id": admin_role[0]})
+                        print("[Migration] Reassigned 'admin' users to 'superadmin'")
+
+                # Delete deprecated roles
+                for role_row in deprecated:
+                    # Delete role_permissions entries
+                    conn.execute(text(
+                        "DELETE FROM role_permissions WHERE role_id = :rid"
+                    ), {"rid": role_row[0]})
+                    # Delete the role itself
+                    conn.execute(text(
+                        "DELETE FROM roles WHERE id = :rid"
+                    ), {"rid": role_row[0]})
+                    print(f"[Migration] Deleted deprecated role: {role_row[1]}")
+
+                conn.commit()
+                print("[Migration] Done: deprecated roles cleaned up")
+
+        # Drop user_level column from users table (no longer used)
+        if 'users' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('users')]
+            if 'user_level' in columns:
+                print("[Migration] Dropping user_level column from users...")
+                conn.execute(text('ALTER TABLE users DROP COLUMN user_level'))
+                conn.commit()
+                print("[Migration] Done: user_level column dropped from users")

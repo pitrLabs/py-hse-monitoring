@@ -64,7 +64,6 @@ class UserBase(BaseModel):
 
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6)
-    user_level: int = Field(default=1, ge=1, le=10)
     role_ids: List[UUID] = []
 
 
@@ -73,7 +72,6 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     password: Optional[str] = Field(None, min_length=6)
     is_active: Optional[bool] = None
-    user_level: Optional[int] = Field(None, ge=1, le=10)
     role_ids: Optional[List[UUID]] = None
 
 
@@ -81,7 +79,6 @@ class UserResponse(UserBase):
     id: UUID
     is_active: bool
     is_superuser: bool
-    user_level: int
     created_at: datetime
     updated_at: datetime
     roles: List[RoleResponse] = []

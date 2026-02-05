@@ -219,7 +219,7 @@ async def upsert_group(
     Useful for frontend to ensure groups exist.
     """
     is_manager = current_user.is_superuser or any(
-        role.name.lower() in ["superadmin", "manager", "admin"]
+        role.name.lower() in ["superadmin", "manager"]
         for role in current_user.roles
     )
     if not is_manager:
@@ -440,7 +440,7 @@ async def update_group(
 ):
     """Update a camera group (admin only)."""
     is_manager = current_user.is_superuser or any(
-        role.name.lower() in ["superadmin", "manager", "admin"]
+        role.name.lower() in ["superadmin", "manager"]
         for role in current_user.roles
     )
     if not is_manager:
@@ -512,7 +512,7 @@ async def move_cameras_to_group(
 ):
     """Move cameras to a group (admin only)."""
     is_manager = current_user.is_superuser or any(
-        role.name.lower() in ["superadmin", "manager", "admin"]
+        role.name.lower() in ["superadmin", "manager"]
         for role in current_user.roles
     )
     if not is_manager:
@@ -538,7 +538,7 @@ async def remove_cameras_from_group(
 ):
     """Remove cameras from their groups (admin only)."""
     is_manager = current_user.is_superuser or any(
-        role.name.lower() in ["superadmin", "manager", "admin"]
+        role.name.lower() in ["superadmin", "manager"]
         for role in current_user.roles
     )
     if not is_manager:

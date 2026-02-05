@@ -44,7 +44,6 @@ class User(Base):
     full_name: Mapped[str | None] = mapped_column(String(100))
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     is_superuser: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    user_level: Mapped[int] = mapped_column(default=1, nullable=False)
     active_session_id: Mapped[str | None] = mapped_column(String(64))  # Current active session - only one allowed
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime)  # Track last login time
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)

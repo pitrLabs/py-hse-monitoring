@@ -149,8 +149,7 @@ def create_admin_user(db: Session, superadmin_role: Role):
                           full_name="System Administrator",
                           hashed_password=get_password_hash("admin123"),
                           is_superuser=True,
-                          is_active=True,
-                          user_level=10)
+                          is_active=True)
         admin_user.roles = [superadmin_role]
         db.add(admin_user)
         db.commit()

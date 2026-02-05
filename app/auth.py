@@ -144,15 +144,6 @@ def require_permission(resource: str, action: str):
     return permission_checker
 
 
-def require_user_level(min_level: int):
-    async def level_checker(current_user: User = Depends(get_current_active_user)) -> User:
-        if current_user.user_level < min_level and not current_user.is_superuser:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN,
-                                detail=f"Requires user level {min_level} or higher")
-
-        return current_user
-    return level_checker
-
 
 def _prehash_password(password: str) -> bytes:
     return hashlib.sha256(password.encode("utf-8")).digest()

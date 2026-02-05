@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import (authenticate_user, create_access_token, get_password_hash,
                       get_current_active_user, get_current_superuser, ACCESS_TOKEN_EXPIRE_MINUTES,
-                      require_permission, require_user_level, generate_session_id)
+                      require_permission, generate_session_id)
 from app.database import get_db
 from app.models import User, Role
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -19,7 +19,7 @@ def register(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
     db_user = User(username=user_data.username, email=user_data.email, full_name=user_data.full_name,
-                   hashed_password=get_password_hash(user_data.password), user_level=user_data.user_level)
+                   hashed_password=get_password_hash(user_data.password))
 
     if user_data.role_ids:
         roles = db.query(Role).filter(Role.id.in_(user_data.role_ids)).all()

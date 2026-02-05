@@ -23,7 +23,7 @@ def is_user_manager_or_above(user: User) -> bool:
         return True
     # Check if user has 'manager' or 'superadmin' role
     for role in user.roles:
-        if role.name.lower() in ('manager', 'superadmin', 'admin'):
+        if role.name.lower() in ('manager', 'superadmin'):
             return True
     return False
 
