@@ -218,6 +218,185 @@ class BmAppClient:
         result = await self._request("/alg_ability_supported")
         return result
 
+    # ==================== Analytics Data APIs ====================
+
+    async def get_people_count(self, session: str = None) -> List[dict]:
+        """Fetch people counting data from BM-APP (table_people_count)"""
+        data = {}
+        if session:
+            data["AlgTaskSession"] = session
+        result = await self._request("/alg_people_count_fetch", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
+    async def get_zone_occupancy(self, session: str = None) -> List[dict]:
+        """Fetch zone occupancy data from BM-APP (table_remained)"""
+        data = {}
+        if session:
+            data["AlgTaskSession"] = session
+        result = await self._request("/alg_remained_fetch", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
+    async def get_zone_occupancy_avg(self, session: str = None) -> List[dict]:
+        """Fetch average zone occupancy from BM-APP (table_remained_avg)"""
+        data = {}
+        if session:
+            data["AlgTaskSession"] = session
+        result = await self._request("/alg_remained_avg_fetch", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
+    async def get_store_count(self, session: str = None) -> List[dict]:
+        """Fetch store entry/exit count from BM-APP (table_store_count)"""
+        data = {}
+        if session:
+            data["AlgTaskSession"] = session
+        result = await self._request("/alg_store_count_fetch", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
+    async def get_stay_duration(self, session: str = None) -> List[dict]:
+        """Fetch stay duration data from BM-APP (table_store_stay_duration)"""
+        data = {}
+        if session:
+            data["AlgTaskSession"] = session
+        result = await self._request("/alg_store_stay_duration_fetch", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
+    # ==================== Schedule APIs ====================
+
+    async def get_schedules(self) -> List[dict]:
+        """Fetch AI task schedules from BM-APP"""
+        result = await self._request("/alg_schedule_fetch")
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Result", {}).get("Content", result.get("Content", []))
+        return []
+
+    async def create_schedule(self, name: str, summary: str = "", value: str = "") -> dict:
+        """Create a new schedule in BM-APP
+
+        Args:
+            name: Schedule name
+            summary: Description/summary of the schedule
+            value: Time range (e.g., "08:00-17:00")
+        """
+        data = {"name": name, "summary": summary, "value": value}
+        result = await self._request("/alg_schedule_create", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return {"id": result.get("ScheduleId"), "success": True}
+        raise Exception(result.get("Result", {}).get("Desc", "Failed to create schedule"))
+
+    async def delete_schedule(self, schedule_id: int) -> dict:
+        """Delete a schedule from BM-APP"""
+        data = {"id": schedule_id}
+        result = await self._request("/alg_schedule_delete", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return {"success": True}
+        raise Exception(result.get("Result", {}).get("Desc", "Failed to delete schedule"))
+
+    # ==================== Sensor APIs ====================
+
+    async def get_sensor_device_types(self) -> List[dict]:
+        """Fetch available sensor device types from BM-APP (LORA, Modbus, GPIO, etc.)"""
+        result = await self._request("/alg_sensor_devices")
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
+    async def get_sensors(self) -> List[dict]:
+        """Fetch configured sensors from BM-APP"""
+        result = await self._request("/alg_sensor_fetch")
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
+    async def create_sensor(
+        self,
+        name: str,
+        sensor_type: int,
+        unique: str = "",
+        protocol: str = "HTTP",
+        extra_params: List[dict] = None
+    ) -> dict:
+        """Create a new sensor in BM-APP
+
+        Args:
+            name: Sensor name
+            sensor_type: Type ID (1=HTTP, 3=GPIO, 4=Modbus, 5=RS232, 6=LORA)
+            unique: Unique identifier
+            protocol: "HTTP" or "IO"
+            extra_params: Additional configuration parameters
+        """
+        data = {
+            "name": name,
+            "type": sensor_type,
+            "unique": unique or name,
+            "protocol": protocol,
+            "extra_params": extra_params or []
+        }
+        result = await self._request("/alg_sensor_create", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return {"success": True}
+        raise Exception(result.get("Result", {}).get("Desc", "Failed to create sensor"))
+
+    async def update_sensor(
+        self,
+        name: str,
+        sensor_type: int,
+        unique: str = "",
+        protocol: str = "HTTP",
+        extra_params: List[dict] = None
+    ) -> dict:
+        """Update an existing sensor in BM-APP"""
+        data = {
+            "name": name,
+            "type": sensor_type,
+            "unique": unique or name,
+            "protocol": protocol,
+            "extra_params": extra_params or []
+        }
+        result = await self._request("/alg_sensor_edit", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return {"success": True}
+        raise Exception(result.get("Result", {}).get("Desc", "Failed to update sensor"))
+
+    async def delete_sensor(self, name: str) -> dict:
+        """Delete a sensor from BM-APP"""
+        data = {"name": name}
+        result = await self._request("/alg_sensor_delete", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return {"success": True}
+        raise Exception(result.get("Result", {}).get("Desc", "Failed to delete sensor"))
+
+    async def clean_sensor_data(self, name: str) -> dict:
+        """Clean all data for a sensor"""
+        data = {"name": name}
+        result = await self._request("/alg_sensor_clean_data", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return {"success": True}
+        raise Exception(result.get("Result", {}).get("Desc", "Failed to clean sensor data"))
+
+    async def get_sensor_devices(self) -> List[dict]:
+        """Fetch configured sensors (alias for get_sensors)"""
+        return await self.get_sensors()
+
+    async def get_sensor_data(self, sensor_id: str = None) -> List[dict]:
+        """Fetch sensor reading data from BM-APP"""
+        data = {}
+        if sensor_id:
+            data["SensorDeviceId"] = sensor_id
+        result = await self._request("/alg_sensor_data_fetch", data)
+        if result.get("Result", {}).get("Code") == 0:
+            return result.get("Content", [])
+        return []
+
     # ==================== Other APIs ====================
 
     async def get_device_stats(self) -> dict:

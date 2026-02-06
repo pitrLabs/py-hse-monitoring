@@ -397,3 +397,137 @@ class VideoSourceWithAssignedUsers(VideoSourceResponse):
 
     class Config:
         from_attributes = True
+
+
+# ============ Analytics Schemas (BM-APP Data Entities) ============
+
+class PeopleCountResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    task_session: Optional[str] = None
+    count_in: int
+    count_out: int
+    total: int
+    record_time: datetime
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ZoneOccupancyResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    task_session: Optional[str] = None
+    zone_name: Optional[str] = None
+    people_count: int
+    record_time: datetime
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ZoneOccupancyAvgResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    task_session: Optional[str] = None
+    zone_name: Optional[str] = None
+    avg_count: float
+    period_start: datetime
+    period_end: Optional[datetime] = None
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StoreCountResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    task_session: Optional[str] = None
+    entry_count: int
+    exit_count: int
+    record_date: datetime
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class StayDurationResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    camera_name: Optional[str] = None
+    task_session: Optional[str] = None
+    zone_name: Optional[str] = None
+    avg_duration: float
+    max_duration: float
+    min_duration: float
+    sample_count: int
+    record_time: datetime
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class ScheduleResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    task_session: Optional[str] = None
+    schedule_name: Optional[str] = None
+    schedule_type: Optional[str] = None
+    start_time: Optional[str] = None
+    end_time: Optional[str] = None
+    days_of_week: Optional[str] = None
+    is_enabled: bool
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SensorDeviceResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    device_name: str
+    device_type: Optional[str] = None
+    location: Optional[str] = None
+    is_online: bool
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SensorDataResponse(BaseModel):
+    id: UUID
+    bmapp_id: Optional[str] = None
+    sensor_device_id: Optional[UUID] = None
+    sensor_bmapp_id: Optional[str] = None
+    value: float
+    unit: Optional[str] = None
+    record_time: datetime
+    extra_data: Optional[dict] = None
+    synced_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AnalyticsSyncResult(BaseModel):
+    entity: str
+    synced: int
+    errors: List[str] = []

@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, String, Table, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Table, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -207,3 +207,134 @@ class Recording(Base):
 
     # Relationships
     alarm: Mapped["Alarm | None"] = relationship("Alarm", lazy="selectin")
+
+
+# ============ BM-APP Analytics Data Models ============
+
+class PeopleCount(Base):
+    """People counting data from BM-APP (table_people_count)"""
+    __tablename__ = "people_counts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    camera_name: Mapped[str | None] = mapped_column(String(200), index=True)
+    task_session: Mapped[str | None] = mapped_column(String(100), index=True)
+    count_in: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    count_out: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    total: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    record_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ZoneOccupancy(Base):
+    """Zone occupancy data from BM-APP (table_remained)"""
+    __tablename__ = "zone_occupancies"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    camera_name: Mapped[str | None] = mapped_column(String(200), index=True)
+    task_session: Mapped[str | None] = mapped_column(String(100), index=True)
+    zone_name: Mapped[str | None] = mapped_column(String(200))
+    people_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    record_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ZoneOccupancyAvg(Base):
+    """Average zone occupancy from BM-APP (table_remained_avg)"""
+    __tablename__ = "zone_occupancy_avgs"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    camera_name: Mapped[str | None] = mapped_column(String(200), index=True)
+    task_session: Mapped[str | None] = mapped_column(String(100), index=True)
+    zone_name: Mapped[str | None] = mapped_column(String(200))
+    avg_count: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    period_end: Mapped[datetime | None] = mapped_column(DateTime)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class StoreCount(Base):
+    """Store entry/exit counting from BM-APP (table_store_count)"""
+    __tablename__ = "store_counts"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    camera_name: Mapped[str | None] = mapped_column(String(200), index=True)
+    task_session: Mapped[str | None] = mapped_column(String(100), index=True)
+    entry_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    exit_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    record_date: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class StayDuration(Base):
+    """Stay duration data from BM-APP (table_store_stay_duration)"""
+    __tablename__ = "stay_durations"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    camera_name: Mapped[str | None] = mapped_column(String(200), index=True)
+    task_session: Mapped[str | None] = mapped_column(String(100), index=True)
+    zone_name: Mapped[str | None] = mapped_column(String(200))
+    avg_duration: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)  # seconds
+    max_duration: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    min_duration: Mapped[float] = mapped_column(Float, default=0.0, nullable=False)
+    sample_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    record_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class Schedule(Base):
+    """AI task schedule from BM-APP (table_schedule)"""
+    __tablename__ = "schedules"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    task_session: Mapped[str | None] = mapped_column(String(100), index=True)
+    schedule_name: Mapped[str | None] = mapped_column(String(200))
+    schedule_type: Mapped[str | None] = mapped_column(String(50))  # daily, weekly, etc.
+    start_time: Mapped[str | None] = mapped_column(String(20))  # HH:MM format
+    end_time: Mapped[str | None] = mapped_column(String(20))
+    days_of_week: Mapped[str | None] = mapped_column(String(50))  # e.g. "1,2,3,4,5"
+    is_enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SensorDevice(Base):
+    """Sensor device definition from BM-APP (table_sensor_device)"""
+    __tablename__ = "sensor_devices"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), unique=True, index=True)
+    device_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    device_type: Mapped[str | None] = mapped_column(String(100))  # temperature, humidity, etc.
+    location: Mapped[str | None] = mapped_column(String(300))
+    is_online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
+class SensorData(Base):
+    """Sensor reading data from BM-APP (table_sensor_device_data)"""
+    __tablename__ = "sensor_data"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)
+    sensor_device_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("sensor_devices.id", ondelete="CASCADE"), index=True)
+    sensor_bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)  # BM-APP sensor device ID
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str | None] = mapped_column(String(50))
+    record_time: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    synced_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    # Relationships
+    sensor_device: Mapped["SensorDevice | None"] = relationship("SensorDevice", lazy="selectin")

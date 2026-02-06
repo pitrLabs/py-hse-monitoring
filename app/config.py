@@ -19,6 +19,9 @@ class Settings(BaseSettings):
     bmapp_alarm_ws_url: str = config("BMAPP_ALARM_WS_URL", default="ws://103.75.84.183:2323/alarm/")
     bmapp_webrtc_url: str = config("BMAPP_WEBRTC_URL", default="http://103.75.84.183:2323/webrtc")
 
+    # Camera status polling
+    camera_status_poll_interval: int = config("CAMERA_STATUS_POLL_INTERVAL", default=10, cast=int)
+
     # External RTU API for camera locations
     rtu_api_key: str = config("RTU_API_KEY", default="plnup2djateng@!145")
     rtu_keypoint_url: str = config("RTU_KEYPOINT_URL", default="https://rtu.up2djty.com/api/keypoint_up2djty")
