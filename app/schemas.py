@@ -65,6 +65,7 @@ class UserBase(BaseModel):
 class UserCreate(UserBase):
     password: str = Field(..., min_length=6)
     role_ids: List[UUID] = []
+    is_superuser: bool = False
 
 
 class UserUpdate(BaseModel):
@@ -72,6 +73,7 @@ class UserUpdate(BaseModel):
     full_name: Optional[str] = None
     password: Optional[str] = Field(None, min_length=6)
     is_active: Optional[bool] = None
+    is_superuser: Optional[bool] = None
     role_ids: Optional[List[UUID]] = None
 
 
