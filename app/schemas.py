@@ -216,6 +216,12 @@ class AlarmResponse(AlarmBase):
     acknowledged_by_id: Optional[UUID] = None
     resolved_at: Optional[datetime] = None
     resolved_by_id: Optional[UUID] = None
+    # MinIO storage fields
+    minio_image_path: Optional[str] = None
+    minio_video_path: Optional[str] = None
+    minio_synced_at: Optional[datetime] = None
+    minio_image_url: Optional[str] = None  # Presigned URL (populated at runtime)
+    minio_video_url: Optional[str] = None  # Presigned URL (populated at runtime)
 
     class Config:
         from_attributes = True
@@ -358,6 +364,12 @@ class RecordingResponse(RecordingBase):
     is_available: bool
     created_at: datetime
     synced_at: Optional[datetime] = None
+    # MinIO storage fields
+    minio_file_path: Optional[str] = None
+    minio_thumbnail_path: Optional[str] = None
+    minio_synced_at: Optional[datetime] = None
+    minio_file_url: Optional[str] = None  # Presigned URL (populated at runtime)
+    minio_thumbnail_url: Optional[str] = None  # Presigned URL (populated at runtime)
 
     class Config:
         from_attributes = True
@@ -533,3 +545,102 @@ class AnalyticsSyncResult(BaseModel):
     entity: str
     synced: int
     errors: List[str] = []
+
+
+# ============ Local Video Schemas ============
+
+class LocalVideoBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+
+
+class LocalVideoCreate(LocalVideoBase):
+    original_filename: str = Field(..., min_length=1, max_length=300)
+    minio_path: str = Field(..., min_length=1, max_length=500)
+    file_size: int = Field(default=0, ge=0)
+    duration: Optional[int] = None
+    resolution: Optional[str] = None
+    format: Optional[str] = None
+
+
+class LocalVideoUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+    status: Optional[str] = Field(None, pattern="^(processing|ready|error)$")
+    error_message: Optional[str] = None
+    duration: Optional[int] = None
+    resolution: Optional[str] = None
+    format: Optional[str] = None
+    thumbnail_path: Optional[str] = None
+
+
+class LocalVideoResponse(LocalVideoBase):
+    id: UUID
+    original_filename: str
+    minio_path: str
+    thumbnail_path: Optional[str] = None
+    file_size: int
+    duration: Optional[int] = None
+    resolution: Optional[str] = None
+    format: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    uploaded_by_id: Optional[UUID] = None
+    created_at: datetime
+    updated_at: datetime
+    # Presigned URLs (populated at runtime)
+    stream_url: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class LocalVideoUploadInit(BaseModel):
+    """Request to initialize a presigned upload."""
+    filename: str = Field(..., min_length=1, max_length=300)
+    name: str = Field(..., min_length=1, max_length=200)
+    description: Optional[str] = Field(None, max_length=1000)
+    file_size: int = Field(..., gt=0)
+    content_type: str = Field(default="video/mp4")
+
+
+class LocalVideoUploadInitResponse(BaseModel):
+    """Response with presigned upload URL."""
+    video_id: UUID
+    upload_url: str
+    minio_path: str
+    expires_in: int  # seconds
+
+
+class LocalVideoUploadComplete(BaseModel):
+    """Request to mark upload as complete."""
+    video_id: UUID
+    duration: Optional[int] = None
+    resolution: Optional[str] = None
+    format: Optional[str] = None
+
+
+class LocalVideoStats(BaseModel):
+    """Storage statistics for local videos."""
+    total_videos: int
+    total_size: int
+    total_size_formatted: str
+    by_status: dict  # {"ready": 10, "processing": 2, "error": 1}
+    by_format: dict  # {"MP4": 8, "AVI": 3, "MKV": 2}
+
+
+# ============ Storage Health Schemas ============
+
+class StorageHealthResponse(BaseModel):
+    status: str
+    endpoint: Optional[str] = None
+    buckets: Optional[List[str]] = None
+    message: Optional[str] = None
+
+
+class BucketStatsResponse(BaseModel):
+    bucket: str
+    object_count: int
+    total_size: int
+    total_size_formatted: str

@@ -4,9 +4,12 @@ from app.database import init_db, SessionLocal
 from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, users, roles, video_sources, ai_tasks
 from app.routers import alarms, locations, recordings, camera_status, analytics
+from app.routers import local_videos, storage
 from app.services.bmapp import start_alarm_listener, stop_alarm_listener
 from app.services.camera_status import start_camera_status_poller, stop_camera_status_poller
 from app.services.analytics_sync import start_analytics_sync, stop_analytics_sync
+from app.services.minio_storage import initialize_minio
+from app.services.media_sync import start_media_sync, stop_media_sync
 from app.services.mediamtx import add_stream_path
 from app.routers.alarms import save_alarm_from_bmapp
 from app.models import VideoSource
@@ -53,11 +56,15 @@ async def lifespan(app: FastAPI):
     await start_camera_status_poller()
     # Start auto-sync for BM-APP analytics data (people count, zone occupancy, etc.)
     await start_analytics_sync()
+    # Initialize MinIO storage and start media sync
+    initialize_minio()
+    await start_media_sync()
     yield
     # Shutdown
     stop_alarm_listener()
     stop_camera_status_poller()
     stop_analytics_sync()
+    stop_media_sync()
 
 
 async def delayed_mediamtx_sync():
@@ -89,6 +96,8 @@ app.include_router(locations.router)
 app.include_router(recordings.router)
 app.include_router(camera_status.router)
 app.include_router(analytics.router)
+app.include_router(local_videos.router)
+app.include_router(storage.router)
 
 @app.get("/")
 def root():

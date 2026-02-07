@@ -135,13 +135,21 @@ class CameraStatusPoller:
                 else:
                     status = STATUS_OFFLINE
 
-                key = f"bmapp:{session}"
-                statuses[key] = {
+                media_name = task.get("MediaName", "").strip()
+                status_entry = {
                     "status": status,
                     "source": "bmapp",
                     "taskSession": session,
-                    "mediaName": task.get("MediaName", ""),
+                    "mediaName": media_name,
                 }
+
+                # Store by session key for BM-APP lookups
+                key = f"bmapp:{session}"
+                statuses[key] = status_entry
+
+                # Also store by MediaName (which matches stream_name) for Video Sources lookup
+                if media_name:
+                    statuses[media_name] = status_entry
         except Exception as e:
             print(f"[CameraStatus] BM-APP poll error: {e}")
         return statuses

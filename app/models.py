@@ -146,6 +146,10 @@ class Alarm(Base):
     acknowledged_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
     resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    # MinIO storage fields
+    minio_image_path: Mapped[str | None] = mapped_column(String(500))  # Path in MinIO bucket
+    minio_video_path: Mapped[str | None] = mapped_column(String(500))  # Path in MinIO bucket
+    minio_synced_at: Mapped[datetime | None] = mapped_column(DateTime)  # When synced to MinIO
 
 
 class CameraLocation(Base):
@@ -204,6 +208,10 @@ class Recording(Base):
     is_available: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
     synced_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # MinIO storage fields
+    minio_file_path: Mapped[str | None] = mapped_column(String(500))
+    minio_thumbnail_path: Mapped[str | None] = mapped_column(String(500))
+    minio_synced_at: Mapped[datetime | None] = mapped_column(DateTime)
 
     # Relationships
     alarm: Mapped["Alarm | None"] = relationship("Alarm", lazy="selectin")
@@ -338,3 +346,27 @@ class SensorData(Base):
 
     # Relationships
     sensor_device: Mapped["SensorDevice | None"] = relationship("SensorDevice", lazy="selectin")
+
+
+class LocalVideo(Base):
+    """Local video files uploaded manually for analysis"""
+    __tablename__ = "local_videos"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000))
+    original_filename: Mapped[str] = mapped_column(String(300), nullable=False)
+    minio_path: Mapped[str] = mapped_column(String(500), nullable=False)  # e.g., "2024/01/28/video_xxx.mp4"
+    thumbnail_path: Mapped[str | None] = mapped_column(String(500))
+    file_size: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # bytes
+    duration: Mapped[int | None] = mapped_column(Integer)  # seconds
+    resolution: Mapped[str | None] = mapped_column(String(20))  # e.g., "1920x1080"
+    format: Mapped[str | None] = mapped_column(String(20))  # e.g., "MP4"
+    status: Mapped[str] = mapped_column(String(20), default="processing", nullable=False, index=True)  # processing, ready, error
+    error_message: Mapped[str | None] = mapped_column(String(500))
+    uploaded_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    uploaded_by: Mapped["User | None"] = relationship("User", lazy="selectin")

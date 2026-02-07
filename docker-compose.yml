@@ -13,6 +13,7 @@ services:
       - "8001:8001"
     depends_on:
       - mediamtx
+      - minio
     networks:
       - hse-network
 
@@ -36,6 +37,25 @@ services:
       - hse-network
     restart: unless-stopped
 
+  minio:
+    image: minio/minio:latest
+    container_name: cont-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin123}
+    volumes:
+      - minio_data:/data
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console
+    networks:
+      - hse-network
+    restart: unless-stopped
+
 networks:
   hse-network:
     driver: bridge
+
+volumes:
+  minio_data:

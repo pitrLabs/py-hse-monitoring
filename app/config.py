@@ -1,36 +1,58 @@
 from pydantic_settings import BaseSettings
-from decouple import config
+from pydantic import Field
+from typing import Optional
 
 
 class Settings(BaseSettings):
-    database_url: str = config("DATABASE_URL")
-    secret_key: str = config("SECRET_KEY")
-    algorithm: str = config("ALGORITHM")
-    access_token_expire_minutes: int = config("ACCESS_TOKEN_EXPIRE_MINUTES", cast=int)
-    app_name: str = config("APP_NAME")
-    app_version: str = config("APP_VERSION")
-    debug: bool = config("DEBUG", cast=bool)
-    webrtc: str = config("WEBRTC", default="")
-    mediamtx_api_url: str = config("MEDIAMTX_API_URL", default="http://mediamtx:9997")
+    # Database
+    database_url: str = Field(alias="DATABASE_URL")
+
+    # Security
+    secret_key: str = Field(alias="SECRET_KEY")
+    algorithm: str = Field(default="HS256", alias="ALGORITHM")
+    access_token_expire_minutes: int = Field(default=30, alias="ACCESS_TOKEN_EXPIRE_MINUTES")
+
+    # Application
+    app_name: str = Field(default="HSE Monitoring", alias="APP_NAME")
+    app_version: str = Field(default="1.0.0", alias="APP_VERSION")
+    debug: bool = Field(default=False, alias="DEBUG")
+
+    # Server
+    webrtc: str = Field(default="", alias="WEBRTC")
+    mediamtx_api_url: str = Field(default="http://mediamtx:9997", alias="MEDIAMTX_API_URL")
 
     # BM-APP Integration
-    bmapp_enabled: bool = config("BMAPP_ENABLED", default=False, cast=bool)
-    bmapp_api_url: str = config("BMAPP_API_URL", default="http://103.75.84.183:2323/api")
-    bmapp_alarm_ws_url: str = config("BMAPP_ALARM_WS_URL", default="ws://103.75.84.183:2323/alarm/")
-    bmapp_webrtc_url: str = config("BMAPP_WEBRTC_URL", default="http://103.75.84.183:2323/webrtc")
+    bmapp_enabled: bool = Field(default=False, alias="BMAPP_ENABLED")
+    bmapp_api_url: str = Field(default="http://103.75.84.183:2323/api", alias="BMAPP_API_URL")
+    bmapp_alarm_ws_url: str = Field(default="ws://103.75.84.183:2323/alarm/", alias="BMAPP_ALARM_WS_URL")
+    bmapp_webrtc_url: str = Field(default="http://103.75.84.183:2323/webrtc", alias="BMAPP_WEBRTC_URL")
 
     # Camera status polling
-    camera_status_poll_interval: int = config("CAMERA_STATUS_POLL_INTERVAL", default=10, cast=int)
+    camera_status_poll_interval: int = Field(default=10, alias="CAMERA_STATUS_POLL_INTERVAL")
 
     # External RTU API for camera locations
-    rtu_api_key: str = config("RTU_API_KEY", default="plnup2djateng@!145")
-    rtu_keypoint_url: str = config("RTU_KEYPOINT_URL", default="https://rtu.up2djty.com/api/keypoint_up2djty")
-    rtu_gps_tim_har_url: str = config("RTU_GPS_TIM_HAR_URL", default="https://rtu.up2djty.com/api/gps_tim_har")
+    rtu_api_key: str = Field(default="plnup2djateng@!145", alias="RTU_API_KEY")
+    rtu_keypoint_url: str = Field(default="https://rtu.up2djty.com/api/keypoint_up2djty", alias="RTU_KEYPOINT_URL")
+    rtu_gps_tim_har_url: str = Field(default="https://rtu.up2djty.com/api/gps_tim_har", alias="RTU_GPS_TIM_HAR_URL")
 
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    # MinIO Object Storage
+    minio_enabled: bool = Field(default=False, alias="MINIO_ENABLED")
+    minio_endpoint: str = Field(default="localhost:9000", alias="MINIO_ENDPOINT")
+    minio_access_key: str = Field(default="minioadmin", alias="MINIO_ACCESS_KEY")
+    minio_secret_key: str = Field(default="minioadmin123", alias="MINIO_SECRET_KEY")
+    minio_secure: bool = Field(default=False, alias="MINIO_SECURE")
+    minio_bucket_alarm_images: str = Field(default="alarm-images", alias="MINIO_BUCKET_ALARM_IMAGES")
+    minio_bucket_recordings: str = Field(default="recordings", alias="MINIO_BUCKET_RECORDINGS")
+    minio_bucket_local_videos: str = Field(default="local-videos", alias="MINIO_BUCKET_LOCAL_VIDEOS")
+    minio_presigned_url_expiry: int = Field(default=3600, alias="MINIO_PRESIGNED_URL_EXPIRY")
+
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "populate_by_name": True,
+        "extra": "ignore",
+    }
 
 
 settings = Settings()
