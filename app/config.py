@@ -46,6 +46,11 @@ class Settings(BaseSettings):
     minio_bucket_local_videos: str = Field(default="local-videos", alias="MINIO_BUCKET_LOCAL_VIDEOS")
     minio_presigned_url_expiry: int = Field(default=3600, alias="MINIO_PRESIGNED_URL_EXPIRY")
 
+    # Telegram Notifications
+    telegram_enabled: bool = Field(default=False, alias="TELEGRAM_ENABLED")
+    telegram_bot_token: str = Field(default="", alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: str = Field(default="", alias="TELEGRAM_CHAT_ID")
+
     model_config = {
         "env_file": ".env",
         "env_file_encoding": "utf-8",

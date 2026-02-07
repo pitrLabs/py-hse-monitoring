@@ -297,6 +297,7 @@ def _save_base64_image_to_minio(base64_data: str, prefix: str = "alarm") -> Opti
 async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     """Save an alarm received from BM-APP to database"""
     from dateutil.parser import parse as parse_datetime
+    from app.services.telegram import telegram
 
     alarm_time = alarm_data.get("alarm_time")
     if isinstance(alarm_time, str):
@@ -340,6 +341,36 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     )
     db.add(alarm)
     db.commit()
+
+    # Send Telegram notification (async, non-blocking)
+    try:
+        # Get image URL for Telegram (prefer labeled image with detection boxes)
+        image_url_for_telegram = None
+        if minio_labeled_image_path and storage.is_initialized:
+            image_url_for_telegram = storage.get_presigned_url(
+                settings.minio_bucket_alarm_images,
+                minio_labeled_image_path
+            )
+        elif minio_image_path and storage.is_initialized:
+            image_url_for_telegram = storage.get_presigned_url(
+                settings.minio_bucket_alarm_images,
+                minio_image_path
+            )
+        elif alarm_data.get("image_url"):
+            image_url_for_telegram = alarm_data.get("image_url")
+
+        await telegram.send_alarm_notification(
+            alarm_type=alarm.alarm_type,
+            alarm_name=alarm.alarm_name,
+            camera_name=alarm.camera_name,
+            location=alarm.location,
+            alarm_time=alarm_time if isinstance(alarm_time, datetime) else datetime.utcnow(),
+            confidence=alarm.confidence,
+            image_url=image_url_for_telegram
+        )
+    except Exception as e:
+        print(f"[Alarm] Failed to send Telegram notification: {e}")
+
     return alarm
 
 
