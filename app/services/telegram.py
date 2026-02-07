@@ -50,13 +50,21 @@ class TelegramService:
 
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
+                # Download image first (handles internal URLs)
+                img_response = await client.get(photo_url)
+                img_response.raise_for_status()
+                image_bytes = img_response.content
+
+                # Upload directly to Telegram
                 response = await client.post(
                     f"{self.api_url}/sendPhoto",
-                    json={
+                    data={
                         "chat_id": self.chat_id,
-                        "photo": photo_url,
                         "caption": caption,
                         "parse_mode": parse_mode
+                    },
+                    files={
+                        "photo": ("alarm.jpg", image_bytes, "image/jpeg")
                     }
                 )
                 response.raise_for_status()

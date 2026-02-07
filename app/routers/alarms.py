@@ -400,33 +400,6 @@ async def create_test_alarm(
     return alarm
 
 
-@router.get("/test-telegram")
-async def test_telegram_notification():
-    """Test Telegram notification without creating an alarm (no auth required)"""
-    from app.services.telegram import telegram
-
-    if not telegram.is_configured:
-        return {
-            "success": False,
-            "message": "Telegram not configured. Check TELEGRAM_ENABLED, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID in .env"
-        }
-
-    success = await telegram.send_alarm_notification(
-        alarm_type="No Helmet",
-        alarm_name="TEST: No Helmet Detected",
-        camera_name="Test Camera",
-        location="Test Location - Zone A",
-        alarm_time=datetime.utcnow(),
-        confidence=0.95,
-        image_url=None
-    )
-
-    return {
-        "success": success,
-        "message": "Test notification sent!" if success else "Failed to send notification"
-    }
-
-
 @router.post("/simulate-bmapp")
 async def simulate_bmapp_alarm(
     raw_data: dict,
