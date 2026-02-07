@@ -164,6 +164,39 @@ def get_recordings_by_alarm(
     return recordings
 
 
+@router.get("/active")
+def get_active_recordings(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all currently active recordings."""
+    return {
+        "active_recordings": list(active_recordings.values()),
+        "count": len(active_recordings)
+    }
+
+
+@router.get("/active/{stream_id}")
+def get_active_recording_status(
+    stream_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Check if a specific stream is being recorded."""
+    if stream_id in active_recordings:
+        info = active_recordings[stream_id]
+        start_time = datetime.fromisoformat(info["start_time"])
+        elapsed = int((datetime.utcnow() - start_time).total_seconds())
+        return {
+            "is_recording": True,
+            "recording_id": info["id"],
+            "started_by": info["started_by_name"],
+            "start_time": info["start_time"],
+            "elapsed_seconds": elapsed
+        }
+    return {
+        "is_recording": False
+    }
+
+
 @router.get("/{recording_id}", response_model=schemas.RecordingResponse)
 def get_recording(
     recording_id: UUID,
@@ -528,37 +561,4 @@ async def stop_recording(
         "duration": duration,
         "start_time": start_time.isoformat(),
         "end_time": end_time.isoformat()
-    }
-
-
-@router.get("/active")
-def get_active_recordings(
-    current_user: User = Depends(get_current_user)
-):
-    """Get all currently active recordings."""
-    return {
-        "active_recordings": list(active_recordings.values()),
-        "count": len(active_recordings)
-    }
-
-
-@router.get("/active/{stream_id}")
-def get_active_recording_status(
-    stream_id: str,
-    current_user: User = Depends(get_current_user)
-):
-    """Check if a specific stream is being recorded."""
-    if stream_id in active_recordings:
-        info = active_recordings[stream_id]
-        start_time = datetime.fromisoformat(info["start_time"])
-        elapsed = int((datetime.utcnow() - start_time).total_seconds())
-        return {
-            "is_recording": True,
-            "recording_id": info["id"],
-            "started_by": info["started_by_name"],
-            "start_time": info["start_time"],
-            "elapsed_seconds": elapsed
-        }
-    return {
-        "is_recording": False
     }

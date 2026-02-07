@@ -140,6 +140,197 @@ def get_alarm_stats(
     }
 
 
+def _get_severity(alarm_type: str) -> str:
+    """Get severity level for alarm type"""
+    critical_types = ["No Helmet", "NoHelmet", "No Safety Vest", "NoSafetyVest", "Intrusion", "Fire", "Smoke"]
+    high_types = ["No Goggles", "NoGoggles", "No Gloves", "NoGloves"]
+    medium_types = ["No Mask", "NoMask"]
+    if alarm_type in critical_types:
+        return "Critical"
+    elif alarm_type in high_types:
+        return "High"
+    elif alarm_type in medium_types:
+        return "Medium"
+    return "Low"
+
+
+@router.get("/export/excel")
+async def export_excel(
+    alarm_type: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    status: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Export alarms to Excel - for Catatan Pelanggaran."""
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+
+    query = db.query(Alarm)
+    filters = []
+    if alarm_type:
+        filters.append(Alarm.alarm_type == alarm_type)
+    if camera_id:
+        filters.append(Alarm.camera_id == camera_id)
+    if status:
+        filters.append(Alarm.status == status)
+    if start_date:
+        filters.append(Alarm.alarm_time >= start_date)
+    if end_date:
+        filters.append(Alarm.alarm_time <= end_date)
+    if filters:
+        query = query.filter(and_(*filters))
+
+    alarms = query.order_by(desc(Alarm.alarm_time)).limit(1000).all()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Catatan Pelanggaran"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+    headers = ["No", "Waktu", "Kamera", "Tipe", "Severity", "Status"]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    for idx, alarm in enumerate(alarms, 1):
+        row = idx + 1
+        ws.cell(row=row, column=1, value=idx).border = thin_border
+        ws.cell(row=row, column=2, value=alarm.alarm_time.strftime('%d %b %Y, %H:%M') if alarm.alarm_time else '').border = thin_border
+        ws.cell(row=row, column=3, value=alarm.camera_name or 'Unknown').border = thin_border
+        ws.cell(row=row, column=4, value=alarm.alarm_type or '').border = thin_border
+        ws.cell(row=row, column=5, value=_get_severity(alarm.alarm_type or '')).border = thin_border
+        ws.cell(row=row, column=6, value=alarm.status or '').border = thin_border
+
+    column_widths = [6, 20, 25, 18, 12, 15]
+    for col, width in enumerate(column_widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
+
+    excel_buffer = BytesIO()
+    wb.save(excel_buffer)
+    excel_buffer.seek(0)
+
+    filename = f"catatan_pelanggaran_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        excel_buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@router.get("/export/excel-images")
+async def export_excel_images(
+    alarm_type: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Export alarms to Excel with images - for Bukti Foto."""
+    import openpyxl
+    from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    from openpyxl.drawing.image import Image as XLImage
+    import httpx
+
+    query = db.query(Alarm)
+    filters = []
+    if alarm_type:
+        filters.append(Alarm.alarm_type == alarm_type)
+    if camera_id:
+        filters.append(Alarm.camera_id == camera_id)
+    if start_date:
+        filters.append(Alarm.alarm_time >= start_date)
+    if end_date:
+        filters.append(Alarm.alarm_time <= end_date)
+    if filters:
+        query = query.filter(and_(*filters))
+
+    alarms = query.order_by(desc(Alarm.alarm_time)).limit(100).all()
+
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Bukti Foto"
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    cell_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+
+    headers = ["No", "Foto", "Waktu", "Kamera", "Lokasi", "Tipe Alarm", "Confidence"]
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    ws.row_dimensions[1].height = 25
+    img_width, img_height, row_height = 120, 80, 65
+
+    for idx, alarm in enumerate(alarms, 1):
+        row = idx + 1
+        ws.row_dimensions[row].height = row_height
+        ws.cell(row=row, column=1, value=idx).border = thin_border
+        ws.cell(row=row, column=1).alignment = cell_alignment
+        ws.cell(row=row, column=2, value="").border = thin_border
+        ws.cell(row=row, column=3, value=alarm.alarm_time.strftime('%d %b %Y\n%H:%M:%S') if alarm.alarm_time else '').border = thin_border
+        ws.cell(row=row, column=3).alignment = cell_alignment
+        ws.cell(row=row, column=4, value=alarm.camera_name or 'Unknown').border = thin_border
+        ws.cell(row=row, column=4).alignment = cell_alignment
+        ws.cell(row=row, column=5, value=alarm.location or '-').border = thin_border
+        ws.cell(row=row, column=5).alignment = cell_alignment
+        ws.cell(row=row, column=6, value=alarm.alarm_type or '').border = thin_border
+        ws.cell(row=row, column=6).alignment = cell_alignment
+        ws.cell(row=row, column=7, value=f"{round(alarm.confidence * 100)}%" if alarm.confidence else '-').border = thin_border
+        ws.cell(row=row, column=7).alignment = cell_alignment
+
+        image_url = None
+        if alarm.minio_labeled_image_path and storage.is_initialized:
+            image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_labeled_image_path)
+        elif alarm.minio_image_path and storage.is_initialized:
+            image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_image_path)
+        elif alarm.image_url:
+            image_url = alarm.image_url
+
+        if image_url:
+            try:
+                async with httpx.AsyncClient(timeout=10.0) as client:
+                    img_response = await client.get(image_url)
+                    if img_response.status_code == 200:
+                        img = XLImage(BytesIO(img_response.content))
+                        img.width, img.height = img_width, img_height
+                        ws.add_image(img, f"B{row}")
+            except Exception as e:
+                print(f"[Excel] Failed to embed image: {e}")
+                ws.cell(row=row, column=2, value="(gagal load)").alignment = cell_alignment
+
+    column_widths = [5, 18, 15, 20, 25, 15, 12]
+    for col, width in enumerate(column_widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
+
+    excel_buffer = BytesIO()
+    wb.save(excel_buffer)
+    excel_buffer.seek(0)
+
+    filename = f"bukti_foto_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        excel_buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
 @router.get("/{alarm_id}", response_model=AlarmResponse)
 def get_alarm(
     alarm_id: UUID,
@@ -666,268 +857,3 @@ async def bulk_download_images(
     )
 
 
-def _get_alarm_severity(alarm_type: str) -> str:
-    """Get severity level for alarm type"""
-    critical_types = ["No Helmet", "NoHelmet", "No Safety Vest", "NoSafetyVest", "Intrusion", "Fire", "Smoke"]
-    high_types = ["No Goggles", "NoGoggles", "No Gloves", "NoGloves"]
-    medium_types = ["No Mask", "NoMask"]
-
-    if alarm_type in critical_types:
-        return "Critical"
-    elif alarm_type in high_types:
-        return "High"
-    elif alarm_type in medium_types:
-        return "Medium"
-    return "Low"
-
-
-@router.get("/export/excel")
-async def export_alarms_excel(
-    alarm_type: Optional[str] = None,
-    camera_id: Optional[str] = None,
-    status: Optional[str] = None,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Export alarms to Excel - for Catatan Pelanggaran (matches UI table columns)."""
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-    except ImportError:
-        raise HTTPException(
-            status_code=500,
-            detail="openpyxl not installed. Run: pip install openpyxl"
-        )
-
-    # Query alarms with filters
-    query = db.query(Alarm)
-
-    filters = []
-    if alarm_type:
-        filters.append(Alarm.alarm_type == alarm_type)
-    if camera_id:
-        filters.append(Alarm.camera_id == camera_id)
-    if status:
-        filters.append(Alarm.status == status)
-    if start_date:
-        filters.append(Alarm.alarm_time >= start_date)
-    if end_date:
-        filters.append(Alarm.alarm_time <= end_date)
-
-    if filters:
-        query = query.filter(and_(*filters))
-
-    alarms = query.order_by(desc(Alarm.alarm_time)).limit(1000).all()
-
-    # Create Excel workbook
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Catatan Pelanggaran"
-
-    # Header style
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_alignment = Alignment(horizontal="center", vertical="center")
-    thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
-
-    # Headers - match UI table columns
-    headers = ["No", "Waktu", "Kamera", "Tipe", "Severity", "Status"]
-
-    for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_alignment
-        cell.border = thin_border
-
-    # Data rows
-    for idx, alarm in enumerate(alarms, 1):
-        row = idx + 1
-        ws.cell(row=row, column=1, value=idx).border = thin_border
-        ws.cell(row=row, column=2, value=alarm.alarm_time.strftime('%d %b %Y, %H:%M') if alarm.alarm_time else '').border = thin_border
-        ws.cell(row=row, column=3, value=alarm.camera_name or 'Unknown').border = thin_border
-        ws.cell(row=row, column=4, value=alarm.alarm_type or '').border = thin_border
-        ws.cell(row=row, column=5, value=_get_alarm_severity(alarm.alarm_type or '')).border = thin_border
-        ws.cell(row=row, column=6, value=alarm.status or '').border = thin_border
-
-    # Auto-adjust column widths
-    column_widths = [6, 20, 25, 18, 12, 15]
-    for col, width in enumerate(column_widths, 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
-
-    # Save to buffer
-    excel_buffer = BytesIO()
-    wb.save(excel_buffer)
-    excel_buffer.seek(0)
-
-    # Generate filename
-    filename = f"catatan_pelanggaran_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
-
-    return StreamingResponse(
-        excel_buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        }
-    )
-
-
-@router.get("/export/excel-images")
-async def export_alarms_excel_with_images(
-    alarm_type: Optional[str] = None,
-    camera_id: Optional[str] = None,
-    start_date: Optional[datetime] = None,
-    end_date: Optional[datetime] = None,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user)
-):
-    """Export alarms to Excel with embedded images - for Bukti Foto."""
-    try:
-        import openpyxl
-        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-        from openpyxl.drawing.image import Image as XLImage
-        import httpx
-    except ImportError:
-        raise HTTPException(
-            status_code=500,
-            detail="openpyxl not installed. Run: pip install openpyxl"
-        )
-
-    # Query alarms with filters
-    query = db.query(Alarm)
-
-    filters = []
-    if alarm_type:
-        filters.append(Alarm.alarm_type == alarm_type)
-    if camera_id:
-        filters.append(Alarm.camera_id == camera_id)
-    if start_date:
-        filters.append(Alarm.alarm_time >= start_date)
-    if end_date:
-        filters.append(Alarm.alarm_time <= end_date)
-
-    if filters:
-        query = query.filter(and_(*filters))
-
-    # Limit to 100 for images (to avoid huge file size)
-    alarms = query.order_by(desc(Alarm.alarm_time)).limit(100).all()
-
-    # Create Excel workbook
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Bukti Foto"
-
-    # Header style
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_alignment = Alignment(horizontal="center", vertical="center")
-    cell_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    thin_border = Border(
-        left=Side(style='thin'),
-        right=Side(style='thin'),
-        top=Side(style='thin'),
-        bottom=Side(style='thin')
-    )
-
-    # Headers
-    headers = ["No", "Foto", "Waktu", "Kamera", "Lokasi", "Tipe Alarm", "Confidence"]
-
-    for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_alignment
-        cell.border = thin_border
-
-    # Set row height for header
-    ws.row_dimensions[1].height = 25
-
-    # Image settings
-    img_width = 120  # pixels
-    img_height = 80  # pixels
-    row_height = 65  # Excel row height
-
-    # Data rows with images
-    for idx, alarm in enumerate(alarms, 1):
-        row = idx + 1
-        ws.row_dimensions[row].height = row_height
-
-        ws.cell(row=row, column=1, value=idx).border = thin_border
-        ws.cell(row=row, column=1).alignment = cell_alignment
-
-        # Column 2: Image placeholder (will add image below)
-        ws.cell(row=row, column=2, value="").border = thin_border
-
-        ws.cell(row=row, column=3, value=alarm.alarm_time.strftime('%d %b %Y\n%H:%M:%S') if alarm.alarm_time else '').border = thin_border
-        ws.cell(row=row, column=3).alignment = cell_alignment
-
-        ws.cell(row=row, column=4, value=alarm.camera_name or 'Unknown').border = thin_border
-        ws.cell(row=row, column=4).alignment = cell_alignment
-
-        ws.cell(row=row, column=5, value=alarm.location or '-').border = thin_border
-        ws.cell(row=row, column=5).alignment = cell_alignment
-
-        ws.cell(row=row, column=6, value=alarm.alarm_type or '').border = thin_border
-        ws.cell(row=row, column=6).alignment = cell_alignment
-
-        ws.cell(row=row, column=7, value=f"{round(alarm.confidence * 100)}%" if alarm.confidence else '-').border = thin_border
-        ws.cell(row=row, column=7).alignment = cell_alignment
-
-        # Try to embed image
-        image_url = None
-        if alarm.minio_labeled_image_path and storage.is_initialized:
-            image_url = storage.get_presigned_url(
-                settings.minio_bucket_alarm_images,
-                alarm.minio_labeled_image_path
-            )
-        elif alarm.minio_image_path and storage.is_initialized:
-            image_url = storage.get_presigned_url(
-                settings.minio_bucket_alarm_images,
-                alarm.minio_image_path
-            )
-        elif alarm.image_url:
-            image_url = alarm.image_url
-
-        if image_url:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    img_response = await client.get(image_url)
-                    if img_response.status_code == 200:
-                        img_data = BytesIO(img_response.content)
-                        img = XLImage(img_data)
-                        img.width = img_width
-                        img.height = img_height
-                        # Position image in cell B{row}
-                        cell_ref = f"B{row}"
-                        ws.add_image(img, cell_ref)
-            except Exception as e:
-                print(f"[Excel] Failed to embed image for alarm {alarm.id}: {e}")
-                ws.cell(row=row, column=2, value="(gagal load)").alignment = cell_alignment
-
-    # Auto-adjust column widths
-    column_widths = [5, 18, 15, 20, 25, 15, 12]
-    for col, width in enumerate(column_widths, 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
-
-    # Save to buffer
-    excel_buffer = BytesIO()
-    wb.save(excel_buffer)
-    excel_buffer.seek(0)
-
-    # Generate filename
-    filename = f"bukti_foto_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
-
-    return StreamingResponse(
-        excel_buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={
-            "Content-Disposition": f'attachment; filename="{filename}"'
-        }
-    )
