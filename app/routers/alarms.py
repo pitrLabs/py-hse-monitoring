@@ -1,4 +1,5 @@
 import json
+import base64
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
@@ -11,9 +12,62 @@ from app.database import get_db
 from app.models import Alarm, User
 from app.schemas import AlarmCreate, AlarmResponse, AlarmUpdate
 from app.auth import get_current_user
+from app.config import settings
 from app.services.bmapp import add_client, remove_client, broadcast_alarm, BmAppAlarmListener
+from app.services.minio_storage import get_minio_storage
 
 router = APIRouter(prefix="/alarms", tags=["alarms"])
+
+
+def _add_presigned_urls(alarm: Alarm) -> dict:
+    """Add presigned URLs to alarm response."""
+    data = {
+        "id": alarm.id,
+        "bmapp_id": alarm.bmapp_id,
+        "alarm_type": alarm.alarm_type,
+        "alarm_name": alarm.alarm_name,
+        "camera_id": alarm.camera_id,
+        "camera_name": alarm.camera_name,
+        "location": alarm.location,
+        "confidence": alarm.confidence,
+        "image_url": alarm.image_url,
+        "video_url": alarm.video_url,
+        "description": alarm.description,
+        "status": alarm.status,
+        "alarm_time": alarm.alarm_time,
+        "created_at": alarm.created_at,
+        "acknowledged_at": alarm.acknowledged_at,
+        "acknowledged_by_id": alarm.acknowledged_by_id,
+        "resolved_at": alarm.resolved_at,
+        "resolved_by_id": alarm.resolved_by_id,
+        "minio_image_path": alarm.minio_image_path,
+        "minio_labeled_image_path": alarm.minio_labeled_image_path,
+        "minio_video_path": alarm.minio_video_path,
+        "minio_synced_at": alarm.minio_synced_at,
+        "minio_image_url": None,
+        "minio_labeled_image_url": None,
+        "minio_video_url": None,
+    }
+
+    storage = get_minio_storage()
+    if storage.is_initialized:
+        if alarm.minio_image_path:
+            data["minio_image_url"] = storage.get_presigned_url(
+                settings.minio_bucket_alarm_images,
+                alarm.minio_image_path
+            )
+        if alarm.minio_labeled_image_path:
+            data["minio_labeled_image_url"] = storage.get_presigned_url(
+                settings.minio_bucket_alarm_images,
+                alarm.minio_labeled_image_path
+            )
+        if alarm.minio_video_path:
+            data["minio_video_url"] = storage.get_presigned_url(
+                settings.minio_bucket_alarm_images,
+                alarm.minio_video_path
+            )
+
+    return data
 
 
 @router.get("/", response_model=List[AlarmResponse])
@@ -47,7 +101,7 @@ def get_alarms(
         query = query.filter(and_(*filters))
 
     alarms = query.order_by(desc(Alarm.alarm_time)).offset(skip).limit(limit).all()
-    return alarms
+    return [_add_presigned_urls(a) for a in alarms]
 
 
 @router.get("/stats")
@@ -96,7 +150,7 @@ def get_alarm(
     alarm = db.query(Alarm).filter(Alarm.id == alarm_id).first()
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
-    return alarm
+    return _add_presigned_urls(alarm)
 
 
 @router.patch("/{alarm_id}/acknowledge", response_model=AlarmResponse)
@@ -115,7 +169,7 @@ def acknowledge_alarm(
     alarm.acknowledged_by_id = current_user.id
     db.commit()
     db.refresh(alarm)
-    return alarm
+    return _add_presigned_urls(alarm)
 
 
 @router.patch("/{alarm_id}/resolve", response_model=AlarmResponse)
@@ -134,7 +188,7 @@ def resolve_alarm(
     alarm.resolved_by_id = current_user.id
     db.commit()
     db.refresh(alarm)
-    return alarm
+    return _add_presigned_urls(alarm)
 
 
 @router.delete("/{alarm_id}")
@@ -206,6 +260,39 @@ async def alarm_websocket(websocket: WebSocket):
         remove_client(websocket)
 
 
+# Helper function to save base64 image to MinIO
+def _save_base64_image_to_minio(base64_data: str, prefix: str = "alarm") -> Optional[str]:
+    """Decode base64 image and save to MinIO. Returns the object path or None."""
+    if not base64_data:
+        return None
+
+    storage = get_minio_storage()
+    if not storage.is_initialized:
+        return None
+
+    try:
+        # Decode base64 to bytes
+        image_bytes = base64.b64decode(base64_data)
+
+        # Generate unique object name
+        object_name = storage.generate_object_name(prefix, "jpg")
+
+        # Upload to MinIO
+        result = storage.upload_bytes(
+            settings.minio_bucket_alarm_images,
+            object_name,
+            image_bytes,
+            "image/jpeg"
+        )
+
+        if result:
+            return object_name
+    except Exception as e:
+        print(f"[Alarm] Failed to save image to MinIO: {e}")
+
+    return None
+
+
 # Internal function to save alarm from BM-APP
 async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     """Save an alarm received from BM-APP to database"""
@@ -217,6 +304,20 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
             alarm_time = parse_datetime(alarm_time)
         except:
             alarm_time = datetime.utcnow()
+
+    # Save base64 images to MinIO if available
+    minio_image_path = None
+    minio_labeled_image_path = None
+
+    # Save raw image
+    image_data_base64 = alarm_data.get("image_data_base64")
+    if image_data_base64:
+        minio_image_path = _save_base64_image_to_minio(image_data_base64, "alarm_raw")
+
+    # Save labeled image (with detection boxes) - prioritize this!
+    labeled_image_data_base64 = alarm_data.get("labeled_image_data_base64")
+    if labeled_image_data_base64:
+        minio_labeled_image_path = _save_base64_image_to_minio(labeled_image_data_base64, "alarm_labeled")
 
     alarm = Alarm(
         bmapp_id=alarm_data.get("bmapp_id"),
@@ -231,7 +332,11 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
         description=alarm_data.get("description"),
         raw_data=alarm_data.get("raw_data"),
         alarm_time=alarm_time,
-        status="new"
+        status="new",
+        # MinIO paths
+        minio_image_path=minio_image_path,
+        minio_labeled_image_path=minio_labeled_image_path,
+        minio_synced_at=datetime.utcnow() if (minio_image_path or minio_labeled_image_path) else None,
     )
     db.add(alarm)
     db.commit()
@@ -404,3 +509,231 @@ async def receive_bmapp_alarm(
                 "Desc": f"Error: {str(e)}"
             }
         }
+
+
+# ============================================================================
+# DOWNLOAD & EXPORT ENDPOINTS
+# ============================================================================
+
+from fastapi.responses import StreamingResponse, Response
+from io import BytesIO
+import zipfile
+import httpx
+
+
+def _get_alarm_image_url(alarm: Alarm) -> Optional[str]:
+    """Get the best available image URL for an alarm."""
+    storage = get_minio_storage()
+
+    # Priority 1: MinIO labeled image (with detection boxes)
+    if storage.is_initialized and alarm.minio_labeled_image_path:
+        return storage.get_presigned_url(
+            settings.minio_bucket_alarm_images,
+            alarm.minio_labeled_image_path
+        )
+
+    # Priority 2: MinIO raw image
+    if storage.is_initialized and alarm.minio_image_path:
+        return storage.get_presigned_url(
+            settings.minio_bucket_alarm_images,
+            alarm.minio_image_path
+        )
+
+    # Priority 3: BM-APP image_url
+    if alarm.image_url:
+        if alarm.image_url.startswith(('http://', 'https://')):
+            return alarm.image_url
+        # Construct BM-APP URL for relative paths
+        bmapp_base = settings.bmapp_api_url.rsplit('/api', 1)[0]
+        return f"{bmapp_base}/{alarm.image_url.lstrip('/')}"
+
+    return None
+
+
+@router.get("/{alarm_id}/download-image")
+async def download_alarm_image(
+    alarm_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Download the alarm image."""
+    alarm = db.query(Alarm).filter(Alarm.id == alarm_id).first()
+    if not alarm:
+        raise HTTPException(status_code=404, detail="Alarm not found")
+
+    image_url = _get_alarm_image_url(alarm)
+    if not image_url:
+        raise HTTPException(status_code=404, detail="No image available for this alarm")
+
+    try:
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(image_url)
+            response.raise_for_status()
+
+            # Generate filename
+            filename = f"alarm_{alarm.alarm_type}_{alarm.alarm_time.strftime('%Y%m%d_%H%M%S')}.jpg"
+
+            return Response(
+                content=response.content,
+                media_type="image/jpeg",
+                headers={
+                    "Content-Disposition": f'attachment; filename="{filename}"'
+                }
+            )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download image: {str(e)}")
+
+
+@router.post("/bulk-download")
+async def bulk_download_images(
+    alarm_ids: List[UUID],
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Download multiple alarm images as a ZIP file."""
+    if not alarm_ids:
+        raise HTTPException(status_code=400, detail="No alarm IDs provided")
+
+    if len(alarm_ids) > 100:
+        raise HTTPException(status_code=400, detail="Maximum 100 images per download")
+
+    alarms = db.query(Alarm).filter(Alarm.id.in_(alarm_ids)).all()
+    if not alarms:
+        raise HTTPException(status_code=404, detail="No alarms found")
+
+    # Create ZIP in memory
+    zip_buffer = BytesIO()
+
+    async with httpx.AsyncClient(timeout=30.0) as client:
+        with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
+            for alarm in alarms:
+                image_url = _get_alarm_image_url(alarm)
+                if not image_url:
+                    continue
+
+                try:
+                    response = await client.get(image_url)
+                    response.raise_for_status()
+
+                    filename = f"{alarm.alarm_type}_{alarm.alarm_time.strftime('%Y%m%d_%H%M%S')}_{str(alarm.id)[:8]}.jpg"
+                    zf.writestr(filename, response.content)
+                except Exception as e:
+                    print(f"Failed to download image for alarm {alarm.id}: {e}")
+                    continue
+
+    zip_buffer.seek(0)
+
+    # Generate ZIP filename
+    zip_filename = f"alarms_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.zip"
+
+    return StreamingResponse(
+        zip_buffer,
+        media_type="application/zip",
+        headers={
+            "Content-Disposition": f'attachment; filename="{zip_filename}"'
+        }
+    )
+
+
+@router.get("/export/excel")
+async def export_alarms_excel(
+    alarm_type: Optional[str] = None,
+    camera_id: Optional[str] = None,
+    status: Optional[str] = None,
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Export alarms to Excel (.xlsx) format."""
+    try:
+        import openpyxl
+        from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
+    except ImportError:
+        raise HTTPException(
+            status_code=500,
+            detail="openpyxl not installed. Run: pip install openpyxl"
+        )
+
+    # Query alarms with filters
+    query = db.query(Alarm)
+
+    filters = []
+    if alarm_type:
+        filters.append(Alarm.alarm_type == alarm_type)
+    if camera_id:
+        filters.append(Alarm.camera_id == camera_id)
+    if status:
+        filters.append(Alarm.status == status)
+    if start_date:
+        filters.append(Alarm.alarm_time >= start_date)
+    if end_date:
+        filters.append(Alarm.alarm_time <= end_date)
+
+    if filters:
+        query = query.filter(and_(*filters))
+
+    alarms = query.order_by(desc(Alarm.alarm_time)).limit(1000).all()
+
+    # Create Excel workbook
+    wb = openpyxl.Workbook()
+    ws = wb.active
+    ws.title = "Bukti Foto"
+
+    # Header style
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+    header_alignment = Alignment(horizontal="center", vertical="center")
+    thin_border = Border(
+        left=Side(style='thin'),
+        right=Side(style='thin'),
+        top=Side(style='thin'),
+        bottom=Side(style='thin')
+    )
+
+    # Headers
+    headers = [
+        "No", "Tanggal & Waktu", "Tipe Alarm", "Nama Alarm", "Kamera",
+        "Lokasi", "Confidence (%)", "Status", "Deskripsi"
+    ]
+
+    for col, header in enumerate(headers, 1):
+        cell = ws.cell(row=1, column=col, value=header)
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.alignment = header_alignment
+        cell.border = thin_border
+
+    # Data rows
+    for idx, alarm in enumerate(alarms, 1):
+        row = idx + 1
+        ws.cell(row=row, column=1, value=idx).border = thin_border
+        ws.cell(row=row, column=2, value=alarm.alarm_time.strftime('%Y-%m-%d %H:%M:%S') if alarm.alarm_time else '').border = thin_border
+        ws.cell(row=row, column=3, value=alarm.alarm_type or '').border = thin_border
+        ws.cell(row=row, column=4, value=alarm.alarm_name or '').border = thin_border
+        ws.cell(row=row, column=5, value=alarm.camera_name or '').border = thin_border
+        ws.cell(row=row, column=6, value=alarm.location or '').border = thin_border
+        ws.cell(row=row, column=7, value=round(alarm.confidence * 100, 1) if alarm.confidence else '').border = thin_border
+        ws.cell(row=row, column=8, value=alarm.status or '').border = thin_border
+        ws.cell(row=row, column=9, value=alarm.description or '').border = thin_border
+
+    # Auto-adjust column widths
+    column_widths = [6, 22, 15, 25, 20, 25, 15, 15, 40]
+    for col, width in enumerate(column_widths, 1):
+        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
+
+    # Save to buffer
+    excel_buffer = BytesIO()
+    wb.save(excel_buffer)
+    excel_buffer.seek(0)
+
+    # Generate filename
+    filename = f"bukti_foto_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+
+    return StreamingResponse(
+        excel_buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        }
+    )

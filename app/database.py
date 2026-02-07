@@ -102,3 +102,14 @@ def _upgrade_schema():
                 conn.execute(text('ALTER TABLE users DROP COLUMN user_level'))
                 conn.commit()
                 print("[Migration] Done: user_level column dropped from users")
+
+        # Add minio_labeled_image_path column to alarms if it doesn't exist
+        if 'alarms' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('alarms')]
+            if 'minio_labeled_image_path' not in columns:
+                print("[Migration] Adding minio_labeled_image_path column to alarms...")
+                conn.execute(text(
+                    'ALTER TABLE alarms ADD COLUMN minio_labeled_image_path VARCHAR(500)'
+                ))
+                conn.commit()
+                print("[Migration] Done: minio_labeled_image_path column added to alarms")

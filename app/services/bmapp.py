@@ -214,6 +214,11 @@ class BmAppAlarmListener:
             ""
         )
 
+        # ===== BASE64 IMAGE DATA (for direct storage to MinIO) =====
+        # ImageData = raw image, ImageDataLabeled = image with detection boxes
+        image_data_base64 = data.get("ImageData") or data.get("imageData") or ""
+        labeled_image_data_base64 = data.get("ImageDataLabeled") or data.get("imageDataLabeled") or ""
+
         # ===== VIDEO URL =====
         video_url = (
             data.get("VideoFile") or
@@ -264,7 +269,10 @@ class BmAppAlarmListener:
             "video_url": video_url,
             "description": description,
             "alarm_time": alarm_time,
-            "raw_data": json.dumps(data)
+            "raw_data": json.dumps(data),
+            # Base64 image data for MinIO storage
+            "image_data_base64": image_data_base64,
+            "labeled_image_data_base64": labeled_image_data_base64,
         }
 
     def stop(self):

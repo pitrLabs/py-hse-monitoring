@@ -2,10 +2,11 @@
 Recordings Router
 Manages video recordings from BM-APP with playback support
 """
+import asyncio
 from datetime import datetime, timedelta
-from typing import List, Optional
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+from typing import List, Optional, Dict
+from uuid import UUID, uuid4
+from fastapi import APIRouter, Depends, HTTPException, status, Query, BackgroundTasks
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, extract
 from sqlalchemy.orm import Session
@@ -16,8 +17,12 @@ from app.auth import get_current_user
 from app.database import get_db
 from app.models import Recording, Alarm, User
 from app.config import settings
+from app.services.minio_storage import get_minio_storage
 
 router = APIRouter(prefix="/recordings", tags=["Recordings"])
+
+# In-memory tracking of active recordings
+active_recordings: Dict[str, dict] = {}
 
 
 @router.get("/", response_model=List[schemas.RecordingResponse])
@@ -408,4 +413,152 @@ def get_video_url(
         "video_url": video_url,
         "duration": recording.duration,
         "start_time": recording.start_time.isoformat() if recording.start_time else None
+    }
+
+
+# ============================================================================
+# MANUAL RECORDING ENDPOINTS
+# ============================================================================
+
+@router.post("/start")
+async def start_recording(
+    stream_id: str = Query(..., description="Stream/task ID (e.g., 'task/session_id')"),
+    camera_name: str = Query(..., description="Camera display name"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Start a manual recording for a stream.
+    Only Operator role and above can start recordings.
+    """
+    # Check user role (P3 cannot record, only operator and above)
+    if current_user.role not in ['operator', 'admin', 'superadmin']:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to start recordings"
+        )
+
+    # Check if already recording this stream
+    if stream_id in active_recordings:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This stream is already being recorded"
+        )
+
+    # Generate recording ID
+    recording_id = str(uuid4())
+    start_time = datetime.utcnow()
+
+    # Store active recording info
+    active_recordings[stream_id] = {
+        "id": recording_id,
+        "stream_id": stream_id,
+        "camera_name": camera_name,
+        "started_by": str(current_user.id),
+        "started_by_name": current_user.full_name or current_user.username,
+        "start_time": start_time.isoformat(),
+        "status": "recording"
+    }
+
+    # Create recording entry in database (status: recording)
+    db_recording = Recording(
+        id=UUID(recording_id),
+        file_name=f"manual_{camera_name}_{start_time.strftime('%Y%m%d_%H%M%S')}.mp4",
+        camera_name=camera_name,
+        task_session=stream_id.replace("task/", ""),
+        start_time=start_time,
+        trigger_type="manual",
+        is_available=False  # Not available until recording completes
+    )
+    db.add(db_recording)
+    db.commit()
+
+    return {
+        "message": "Recording started",
+        "recording_id": recording_id,
+        "stream_id": stream_id,
+        "camera_name": camera_name,
+        "start_time": start_time.isoformat()
+    }
+
+
+@router.post("/stop")
+async def stop_recording(
+    stream_id: str = Query(..., description="Stream/task ID"),
+    background_tasks: BackgroundTasks = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Stop a manual recording for a stream.
+    """
+    # Check user role
+    if current_user.role not in ['operator', 'admin', 'superadmin']:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have permission to stop recordings"
+        )
+
+    # Check if recording exists
+    if stream_id not in active_recordings:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No active recording found for this stream"
+        )
+
+    recording_info = active_recordings.pop(stream_id)
+    recording_id = recording_info["id"]
+    end_time = datetime.utcnow()
+    start_time = datetime.fromisoformat(recording_info["start_time"])
+    duration = int((end_time - start_time).total_seconds())
+
+    # Update recording in database
+    db_recording = db.query(Recording).filter(Recording.id == UUID(recording_id)).first()
+    if db_recording:
+        db_recording.end_time = end_time
+        db_recording.duration = duration
+        db_recording.is_available = True  # Now available for playback
+        db.commit()
+        db.refresh(db_recording)
+
+    return {
+        "message": "Recording stopped",
+        "recording_id": recording_id,
+        "stream_id": stream_id,
+        "duration": duration,
+        "start_time": start_time.isoformat(),
+        "end_time": end_time.isoformat()
+    }
+
+
+@router.get("/active")
+def get_active_recordings(
+    current_user: User = Depends(get_current_user)
+):
+    """Get all currently active recordings."""
+    return {
+        "active_recordings": list(active_recordings.values()),
+        "count": len(active_recordings)
+    }
+
+
+@router.get("/active/{stream_id}")
+def get_active_recording_status(
+    stream_id: str,
+    current_user: User = Depends(get_current_user)
+):
+    """Check if a specific stream is being recorded."""
+    if stream_id in active_recordings:
+        info = active_recordings[stream_id]
+        start_time = datetime.fromisoformat(info["start_time"])
+        elapsed = int((datetime.utcnow() - start_time).total_seconds())
+        return {
+            "is_recording": True,
+            "recording_id": info["id"],
+            "started_by": info["started_by_name"],
+            "start_time": info["start_time"],
+            "elapsed_seconds": elapsed
+        }
+    return {
+        "is_recording": False
     }

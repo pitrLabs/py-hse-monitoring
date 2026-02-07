@@ -218,9 +218,11 @@ class AlarmResponse(AlarmBase):
     resolved_by_id: Optional[UUID] = None
     # MinIO storage fields
     minio_image_path: Optional[str] = None
+    minio_labeled_image_path: Optional[str] = None  # Labeled image (with detection boxes)
     minio_video_path: Optional[str] = None
     minio_synced_at: Optional[datetime] = None
     minio_image_url: Optional[str] = None  # Presigned URL (populated at runtime)
+    minio_labeled_image_url: Optional[str] = None  # Presigned URL for labeled image
     minio_video_url: Optional[str] = None  # Presigned URL (populated at runtime)
 
     class Config:

@@ -147,7 +147,8 @@ class Alarm(Base):
     resolved_at: Mapped[datetime | None] = mapped_column(DateTime)
     resolved_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     # MinIO storage fields
-    minio_image_path: Mapped[str | None] = mapped_column(String(500))  # Path in MinIO bucket
+    minio_image_path: Mapped[str | None] = mapped_column(String(500))  # Path in MinIO bucket (raw image)
+    minio_labeled_image_path: Mapped[str | None] = mapped_column(String(500))  # Path for labeled image (with detection boxes)
     minio_video_path: Mapped[str | None] = mapped_column(String(500))  # Path in MinIO bucket
     minio_synced_at: Mapped[datetime | None] = mapped_column(DateTime)  # When synced to MinIO
 
