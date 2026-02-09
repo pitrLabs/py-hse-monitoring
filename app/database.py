@@ -113,3 +113,57 @@ def _upgrade_schema():
                 ))
                 conn.commit()
                 print("[Migration] Done: minio_labeled_image_path column added to alarms")
+
+        # Create ai_boxes table if it doesn't exist
+        if 'ai_boxes' not in inspector.get_table_names():
+            print("[Migration] Creating ai_boxes table...")
+            conn.execute(text('''
+                CREATE TABLE ai_boxes (
+                    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                    name VARCHAR(100) NOT NULL,
+                    code VARCHAR(20) UNIQUE NOT NULL,
+                    api_url VARCHAR(500) NOT NULL,
+                    alarm_ws_url VARCHAR(500) NOT NULL,
+                    stream_ws_url VARCHAR(500) NOT NULL,
+                    is_active BOOLEAN DEFAULT true NOT NULL,
+                    is_online BOOLEAN DEFAULT false NOT NULL,
+                    last_seen_at TIMESTAMP,
+                    last_error VARCHAR(500),
+                    created_at TIMESTAMP DEFAULT NOW() NOT NULL,
+                    updated_at TIMESTAMP DEFAULT NOW() NOT NULL
+                )
+            '''))
+            conn.execute(text('CREATE INDEX ix_ai_boxes_code ON ai_boxes(code)'))
+            conn.commit()
+            print("[Migration] Done: ai_boxes table created")
+
+        # Add aibox_id column to video_sources if it doesn't exist
+        if 'video_sources' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('video_sources')]
+            if 'aibox_id' not in columns:
+                print("[Migration] Adding aibox_id column to video_sources...")
+                conn.execute(text(
+                    'ALTER TABLE video_sources ADD COLUMN aibox_id UUID REFERENCES ai_boxes(id) ON DELETE SET NULL'
+                ))
+                conn.execute(text('CREATE INDEX ix_video_sources_aibox_id ON video_sources(aibox_id)'))
+                conn.commit()
+                print("[Migration] Done: aibox_id column added to video_sources")
+
+        # Add aibox columns to alarms if they don't exist
+        if 'alarms' in inspector.get_table_names():
+            columns = [c['name'] for c in inspector.get_columns('alarms')]
+            if 'aibox_id' not in columns:
+                print("[Migration] Adding aibox_id column to alarms...")
+                conn.execute(text(
+                    'ALTER TABLE alarms ADD COLUMN aibox_id UUID REFERENCES ai_boxes(id) ON DELETE SET NULL'
+                ))
+                conn.execute(text('CREATE INDEX ix_alarms_aibox_id ON alarms(aibox_id)'))
+                conn.commit()
+                print("[Migration] Done: aibox_id column added to alarms")
+            if 'aibox_name' not in columns:
+                print("[Migration] Adding aibox_name column to alarms...")
+                conn.execute(text(
+                    'ALTER TABLE alarms ADD COLUMN aibox_name VARCHAR(100)'
+                ))
+                conn.commit()
+                print("[Migration] Done: aibox_name column added to alarms")

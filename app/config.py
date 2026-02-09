@@ -23,9 +23,11 @@ class Settings(BaseSettings):
 
     # BM-APP Integration
     bmapp_enabled: bool = Field(default=False, alias="BMAPP_ENABLED")
-    bmapp_api_url: str = Field(default="http://103.75.84.183:2323/api", alias="BMAPP_API_URL")
-    bmapp_alarm_ws_url: str = Field(default="ws://103.75.84.183:2323/alarm/", alias="BMAPP_ALARM_WS_URL")
-    bmapp_webrtc_url: str = Field(default="http://103.75.84.183:2323/webrtc", alias="BMAPP_WEBRTC_URL")
+    # DEPRECATED: Use AI Box URLs from database instead (Admin > AI Boxes)
+    # These are fallback values for backward compatibility only
+    bmapp_api_url: str = Field(default="http://localhost:2323/api", alias="BMAPP_API_URL")
+    bmapp_alarm_ws_url: str = Field(default="ws://localhost:2323/alarm/", alias="BMAPP_ALARM_WS_URL")
+    bmapp_webrtc_url: str = Field(default="http://localhost:2323/webrtc", alias="BMAPP_WEBRTC_URL")
 
     # Camera status polling
     camera_status_poll_interval: int = Field(default=10, alias="CAMERA_STATUS_POLL_INTERVAL")

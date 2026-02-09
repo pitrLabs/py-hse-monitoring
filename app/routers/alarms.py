@@ -9,7 +9,7 @@ from sqlalchemy import desc, and_
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import Alarm, User
+from app.models import Alarm, User, AIBox
 from app.schemas import AlarmCreate, AlarmResponse, AlarmUpdate
 from app.auth import get_current_user
 from app.config import settings
@@ -511,6 +511,15 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     if labeled_image_data_base64:
         minio_labeled_image_path = _save_base64_image_to_minio(labeled_image_data_base64, "alarm_labeled")
 
+    # Parse aibox_id if provided (comes as string from parsed alarm)
+    aibox_id = alarm_data.get("aibox_id")
+    if aibox_id and isinstance(aibox_id, str):
+        try:
+            from uuid import UUID
+            aibox_id = UUID(aibox_id)
+        except ValueError:
+            aibox_id = None
+
     alarm = Alarm(
         bmapp_id=alarm_data.get("bmapp_id"),
         alarm_type=alarm_data.get("alarm_type", "Unknown"),
@@ -529,6 +538,9 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
         minio_image_path=minio_image_path,
         minio_labeled_image_path=minio_labeled_image_path,
         minio_synced_at=datetime.utcnow() if (minio_image_path or minio_labeled_image_path) else None,
+        # AI Box info
+        aibox_id=aibox_id,
+        aibox_name=alarm_data.get("aibox_name"),
     )
     db.add(alarm)
     db.commit()
@@ -557,7 +569,8 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
             location=alarm.location,
             alarm_time=alarm_time if isinstance(alarm_time, datetime) else datetime.utcnow(),
             confidence=alarm.confidence,
-            image_url=image_url_for_telegram
+            image_url=image_url_for_telegram,
+            aibox_name=alarm.aibox_name
         )
     except Exception as e:
         print(f"[Alarm] Failed to send Telegram notification: {e}")
@@ -743,7 +756,7 @@ import zipfile
 import httpx
 
 
-def _get_alarm_image_url(alarm: Alarm) -> Optional[str]:
+def _get_alarm_image_url(alarm: Alarm, db: Session = None) -> Optional[str]:
     """Get the best available image URL for an alarm."""
     storage = get_minio_storage()
 
@@ -765,8 +778,15 @@ def _get_alarm_image_url(alarm: Alarm) -> Optional[str]:
     if alarm.image_url:
         if alarm.image_url.startswith(('http://', 'https://')):
             return alarm.image_url
-        # Construct BM-APP URL for relative paths
-        bmapp_base = settings.bmapp_api_url.rsplit('/api', 1)[0]
+        # Construct BM-APP URL for relative paths - use AI Box's api_url if available
+        bmapp_base = None
+        if alarm.aibox_id and db:
+            aibox = db.query(AIBox).filter(AIBox.id == alarm.aibox_id).first()
+            if aibox:
+                bmapp_base = aibox.api_url.rsplit('/api', 1)[0] if aibox.api_url else None
+        if not bmapp_base:
+            # Fallback to config (deprecated)
+            bmapp_base = settings.bmapp_api_url.rsplit('/api', 1)[0]
         return f"{bmapp_base}/{alarm.image_url.lstrip('/')}"
 
     return None
@@ -783,7 +803,7 @@ async def download_alarm_image(
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
 
-    image_url = _get_alarm_image_url(alarm)
+    image_url = _get_alarm_image_url(alarm, db)
     if not image_url:
         raise HTTPException(status_code=404, detail="No image available for this alarm")
 
@@ -829,7 +849,7 @@ async def bulk_download_images(
     async with httpx.AsyncClient(timeout=30.0) as client:
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for alarm in alarms:
-                image_url = _get_alarm_image_url(alarm)
+                image_url = _get_alarm_image_url(alarm, db)
                 if not image_url:
                     continue
 

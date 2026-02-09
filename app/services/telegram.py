@@ -82,7 +82,8 @@ class TelegramService:
         location: Optional[str],
         alarm_time: datetime,
         confidence: Optional[float] = None,
-        image_url: Optional[str] = None
+        image_url: Optional[str] = None,
+        aibox_name: Optional[str] = None
     ) -> bool:
         """Send a formatted alarm notification"""
         if not self.is_configured:
@@ -112,6 +113,9 @@ class TelegramService:
 <b>Camera:</b> {camera_name or 'Unknown'}
 <b>Location:</b> {location or 'Not specified'}
 <b>Time:</b> {time_str}"""
+
+        if aibox_name:
+            message += f"\n<b>AI Box:</b> {aibox_name}"
 
         if confidence:
             message += f"\n<b>Confidence:</b> {confidence * 100:.0f}%"

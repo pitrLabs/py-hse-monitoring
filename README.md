@@ -1,6 +1,471 @@
-# HSE Monitoring System - User Management
+# HSE Monitoring System
 
-Complete user management system with authentication, user levels, and role-based access control (RBAC).
+Sistem monitoring keselamatan kerja (HSE) dengan integrasi AI detection, multi-source video streaming, dan centralized storage.
+
+---
+
+## System Architecture
+
+### High-Level Overview
+
+```mermaid
+flowchart TB
+    subgraph FIELD["📍 Field - Site"]
+        CAM1[🎥 IP Camera 1]
+        CAM2[🎥 IP Camera 2]
+        CAM3[🎥 IP Camera 3]
+        CAM4[🎥 IP Camera N...]
+    end
+
+    subgraph AIBOXES["🤖 AI Processing Layer"]
+        subgraph BOX1["AI Box #1 - Site A"]
+            BMAPP1[BM-APP]
+            MQTT1[MQTT Broker]
+            BMAPP1 <--> MQTT1
+        end
+
+        subgraph BOX2["AI Box #2 - Site B"]
+            BMAPP2[BM-APP]
+            MQTT2[MQTT Broker]
+            BMAPP2 <--> MQTT2
+        end
+
+        subgraph BOX3["AI Box #3 - Site C"]
+            BMAPP3[BM-APP]
+            MQTT3[MQTT Broker]
+            BMAPP3 <--> MQTT3
+        end
+    end
+
+    subgraph STORAGE["💾 Distributed Storage - Docker Host"]
+        subgraph MINIO_CLUSTER["MinIO Cluster (Docker Containers)"]
+            NGINX_LB[Nginx Load Balancer]
+            MINIO1[MinIO Node 1]
+            MINIO2[MinIO Node 2]
+            MINIO3[MinIO Node 3]
+            MINIO4[MinIO Node 4]
+        end
+
+        subgraph NAS_STORAGE["NAS Devices (Pure Storage via NFS)"]
+            NAS1[(NAS #1)]
+            NAS2[(NAS #2)]
+            NAS3[(NAS #3)]
+            NAS4[(NAS #4)]
+        end
+    end
+
+    subgraph BACKEND["⚙️ HSE Backend"]
+        API[FastAPI Server]
+        WS_MGR[WebSocket Manager]
+        SYNC[Media Sync Service]
+        DB[(PostgreSQL)]
+    end
+
+    subgraph NOTIFY["📢 Notifications"]
+        TELEGRAM[Telegram Bot]
+    end
+
+    subgraph FRONTEND["🖥️ Frontend"]
+        ANGULAR[Angular Web App]
+    end
+
+    %% Camera to AI Box connections
+    CAM1 --> BMAPP1
+    CAM2 --> BMAPP1
+    CAM3 --> BMAPP2
+    CAM4 --> BMAPP3
+
+    %% AI Box to Backend connections
+    BMAPP1 -->|HTTP API + WebSocket| API
+    BMAPP2 -->|HTTP API + WebSocket| API
+    BMAPP3 -->|HTTP API + WebSocket| API
+
+    WS_MGR -->|Alarm Events| BMAPP1
+    WS_MGR -->|Alarm Events| BMAPP2
+    WS_MGR -->|Alarm Events| BMAPP3
+
+    %% MinIO cluster connections
+    NGINX_LB --> MINIO1
+    NGINX_LB --> MINIO2
+    NGINX_LB --> MINIO3
+    NGINX_LB --> MINIO4
+
+    MINIO1 -.->|NFS mount| NAS1
+    MINIO2 -.->|NFS mount| NAS2
+    MINIO3 -.->|NFS mount| NAS3
+    MINIO4 -.->|NFS mount| NAS4
+
+    %% Backend connections
+    API --> DB
+    API --> NGINX_LB
+    SYNC --> NGINX_LB
+    SYNC --> BMAPP1
+    SYNC --> BMAPP2
+    SYNC --> BMAPP3
+
+    API --> TELEGRAM
+    ANGULAR --> API
+```
+
+---
+
+### AI Box (BM-APP) Internal Architecture
+
+```mermaid
+flowchart LR
+    subgraph AIBOX["AI Box - BM-APP"]
+        subgraph INPUT["Input"]
+            RTSP[RTSP Stream]
+            HTTP_CAM[HTTP Camera]
+        end
+
+        subgraph CORE["Core Services"]
+            DECODER[Video Decoder]
+            AI_ENGINE[AI Engine]
+            ALGORITHMS[Detection Algorithms]
+        end
+
+        subgraph MESSAGING["Messaging"]
+            MQTT_BROKER[MQTT Broker<br/>Port 1883]
+            ALARM_PUB[Alarm Publisher]
+            CONTROL_SUB[Control Subscriber]
+        end
+
+        subgraph API_LAYER["API Layer"]
+            REST_API[REST API<br/>Port 2323]
+            WS_SERVER["WebSocket Server<br/>Alarm + Video Stream"]
+        end
+
+        subgraph STORAGE_LOCAL["Local Storage"]
+            RECORDINGS[Video Recordings]
+            SNAPSHOTS[Alarm Snapshots]
+        end
+    end
+
+    RTSP --> DECODER
+    HTTP_CAM --> DECODER
+    DECODER --> AI_ENGINE
+    AI_ENGINE --> ALGORITHMS
+
+    ALGORITHMS -->|Detection Event| ALARM_PUB
+    ALARM_PUB --> MQTT_BROKER
+    MQTT_BROKER -->|Alarm| WS_SERVER
+
+    CONTROL_SUB --> MQTT_BROKER
+    CONTROL_SUB -->|Start/Stop Task| AI_ENGINE
+
+    AI_ENGINE -->|Live Stream| WS_SERVER
+    AI_ENGINE --> RECORDINGS
+    ALGORITHMS --> SNAPSHOTS
+
+    REST_API -->|Query Data| RECORDINGS
+    REST_API -->|Query Data| SNAPSHOTS
+```
+
+#### MQTT Topics dalam BM-APP
+
+| Topic | Direction | Description |
+|-------|-----------|-------------|
+| `alarm/{task_session}` | Publish | Real-time alarm events |
+| `control/{task_session}` | Subscribe | Start/stop AI tasks |
+| `status/{device_id}` | Publish | Device health status |
+| `recording/{task_session}` | Publish | Recording status updates |
+
+---
+
+### Multi AI Box Connection Flow
+
+```mermaid
+sequenceDiagram
+    participant FE as Frontend
+    participant BE as HSE Backend
+    participant BOX1 as AI Box #1
+    participant BOX2 as AI Box #2
+    participant BOX3 as AI Box #3
+    participant TG as Telegram
+    participant MINIO as MinIO
+
+    Note over BE: Startup - Connect to all AI Boxes
+
+    BE->>BOX1: Connect WebSocket ws://box1:2323/alarm/
+    BE->>BOX2: Connect WebSocket ws://box2:2323/alarm/
+    BE->>BOX3: Connect WebSocket ws://box3:2323/alarm/
+
+    BOX1-->>BE: Connected ✓
+    BOX2-->>BE: Connected ✓
+    BOX3-->>BE: Connected ✓
+
+    Note over BOX1: AI Detection Event
+    BOX1->>BE: Alarm: NoHelmet detected
+    BE->>BE: Save to PostgreSQL
+    BE->>BE: Identify source: AI Box #1
+
+    BE->>MINIO: Upload alarm image
+    MINIO-->>BE: minio_path: alarm-images/2024/...
+
+    BE->>TG: Send notification with photo
+    BE->>FE: WebSocket broadcast to clients
+
+    Note over BOX2: Different AI Box Event
+    BOX2->>BE: Alarm: Fire detected
+    BE->>BE: Save with aibox_id = Box #2
+    BE->>TG: Send critical alert
+```
+
+---
+
+### Storage Architecture: Multiple NAS with MinIO
+
+```mermaid
+flowchart TB
+    subgraph SOURCES["Data Sources"]
+        ALARM_IMG[Alarm Images<br/>from AI Boxes]
+        RECORDINGS[Video Recordings<br/>from AI Boxes]
+        LOCAL_VID[Local Video<br/>Manual Upload]
+    end
+
+    subgraph HSE_BACKEND["HSE Backend"]
+        MEDIA_SYNC[Media Sync Service]
+        STORAGE_SVC[MinIO Storage Service]
+        API[FastAPI]
+    end
+
+    subgraph SERVER["Docker Host Server"]
+        subgraph DOCKER["Docker Containers"]
+            LB["Nginx Load Balancer<br/>:9000 API, :9001 Console"]
+
+            subgraph NODES["MinIO Nodes - Erasure Coded"]
+                M1[minio1:9000]
+                M2[minio2:9000]
+                M3[minio3:9000]
+                M4[minio4:9000]
+            end
+        end
+
+        subgraph MOUNTS["NFS or iSCSI Mount Points"]
+            MNT1["mnt/nas1"]
+            MNT2["mnt/nas2"]
+            MNT3["mnt/nas3"]
+            MNT4["mnt/nas4"]
+        end
+    end
+
+    subgraph NAS_DEVICES["NAS Devices - Pure Storage Only"]
+        NAS1[(NAS #1<br/>8TB)]
+        NAS2[(NAS #2<br/>8TB)]
+        NAS3[(NAS #3<br/>8TB)]
+        NAS4[(NAS #4<br/>8TB)]
+    end
+
+    ALARM_IMG --> MEDIA_SYNC
+    RECORDINGS --> MEDIA_SYNC
+    LOCAL_VID --> API
+
+    MEDIA_SYNC --> STORAGE_SVC
+    API --> STORAGE_SVC
+    STORAGE_SVC --> LB
+
+    LB --> M1 & M2 & M3 & M4
+
+    M1 -.->|volume mount| MNT1
+    M2 -.->|volume mount| MNT2
+    M3 -.->|volume mount| MNT3
+    M4 -.->|volume mount| MNT4
+
+    MNT1 ===|NFS/iSCSI| NAS1
+    MNT2 ===|NFS/iSCSI| NAS2
+    MNT3 ===|NFS/iSCSI| NAS3
+    MNT4 ===|NFS/iSCSI| NAS4
+
+    style LB fill:#f9f,stroke:#333
+    style NODES fill:#bbf,stroke:#333
+    style NAS_DEVICES fill:#ffd,stroke:#333
+```
+
+> **Note:** NAS devices hanya menyediakan storage (NFS/iSCSI share). MinIO berjalan sebagai Docker container di server, bukan di NAS.
+
+#### Erasure Coding Benefit
+
+```
+┌───────────────────────────────────────────────────────┐
+│  File: alarm_2024_001.jpg (100KB)                     │
+├───────────────────────────────────────────────────────┤
+│                                                       │
+│  Erasure Coded (EC:2) - Can survive 2 node failures   │
+│                                                       │
+│  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐   │
+│  │ NAS #1  │  │ NAS #2  │  │ NAS #3  │  │ NAS #4  │   │
+│  │ Data 1  │  │ Data 2  │  │ Parity 1│  │ Parity 2│   │
+│  │  25KB   │  │  25KB   │  │  25KB   │  │  25KB   │   │
+│  └─────────┘  └─────────┘  └─────────┘  └─────────┘   │
+│       ✓            ✓            ✗            ✗        │
+│                          (2 nodes down = still OK!)   │
+│                                                       │
+└───────────────────────────────────────────────────────┘
+```
+
+---
+
+### Complete Data Flow
+
+```mermaid
+flowchart LR
+    subgraph CAMERA["Camera"]
+        C[🎥 IP Camera]
+    end
+
+    subgraph AIBOX["AI Box"]
+        direction TB
+        A1[RTSP Input]
+        A2[AI Detection]
+        A3[MQTT Publish]
+        A4[WebSocket Push]
+        A1 --> A2 --> A3 --> A4
+    end
+
+    subgraph BACKEND["HSE Backend"]
+        direction TB
+        B1[WS Manager]
+        B2[Alarm Router]
+        B3[Media Sync]
+        B4[PostgreSQL]
+        B1 --> B2
+        B2 --> B3
+        B2 --> B4
+    end
+
+    subgraph STORAGE["MinIO + NAS"]
+        direction TB
+        S1[MinIO Cluster]
+        S2[(4x NAS)]
+        S1 --> S2
+    end
+
+    subgraph OUTPUT["Output"]
+        direction TB
+        O1[📱 Telegram]
+        O2[🖥️ Web Dashboard]
+        O3[📊 Excel Reports]
+    end
+
+    C -->|RTSP| AIBOX
+    AIBOX -->|WS: Alarm| BACKEND
+    BACKEND -->|Store Media| STORAGE
+    BACKEND --> OUTPUT
+```
+
+---
+
+### Database Schema for Multi AI Box
+
+```mermaid
+erDiagram
+    AI_BOXES ||--o{ VIDEO_SOURCES : contains
+    AI_BOXES ||--o{ ALARMS : generates
+    AI_BOXES ||--o{ RECORDINGS : stores
+    VIDEO_SOURCES ||--o{ AI_TASKS : has
+    VIDEO_SOURCES ||--o{ ALARMS : triggers
+    ALARMS ||--o{ RECORDINGS : linked
+    USERS ||--o{ ALARMS : acknowledges
+
+    AI_BOXES {
+        uuid id PK
+        string name "Site A, Site B"
+        string code "SITE_A, SITE_B"
+        string api_url "http://box1:2323/api"
+        string alarm_ws_url "ws://box1:2323/alarm/"
+        string webrtc_url "http://box1:2323/webrtc"
+        boolean is_active
+        boolean is_online
+        datetime last_seen_at
+    }
+
+    VIDEO_SOURCES {
+        uuid id PK
+        uuid aibox_id FK
+        string name
+        string stream_name
+        string url
+        boolean is_active
+    }
+
+    ALARMS {
+        uuid id PK
+        uuid aibox_id FK
+        string aibox_name
+        string alarm_type
+        string camera_name
+        string image_url
+        string minio_image_path
+        datetime alarm_time
+    }
+
+    RECORDINGS {
+        uuid id PK
+        uuid aibox_id FK
+        string file_name
+        string minio_file_path
+        datetime start_time
+    }
+```
+
+---
+
+### Deployment Topology
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                              PRODUCTION SETUP                                │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐       │
+│  │   SITE A        │     │   SITE B        │     │   SITE C        │       │
+│  │   Semarang      │     │   Pekalongan    │     │   Cilacap       │       │
+│  │                 │     │                 │     │                 │       │
+│  │  ┌───────────┐  │     │  ┌───────────┐  │     │  ┌───────────┐  │       │
+│  │  │ AI Box #1 │  │     │  │ AI Box #2 │  │     │  │ AI Box #3 │  │       │
+│  │  │ 10.0.1.10 │  │     │  │ 10.0.2.10 │  │     │  │ 10.0.3.10 │  │       │
+│  │  └─────┬─────┘  │     │  └─────┬─────┘  │     │  └─────┬─────┘  │       │
+│  │        │        │     │        │        │     │        │        │       │
+│  │  ┌─────┴─────┐  │     │  ┌─────┴─────┐  │     │  ┌─────┴─────┐  │       │
+│  │  │ 4 Cameras │  │     │  │ 8 Cameras │  │     │  │ 6 Cameras │  │       │
+│  │  └───────────┘  │     │  └───────────┘  │     │  └───────────┘  │       │
+│  └────────┬────────┘     └────────┬────────┘     └────────┬────────┘       │
+│           │                       │                       │                 │
+│           └───────────────────────┼───────────────────────┘                 │
+│                                   │                                         │
+│                          ┌────────▼────────┐                                │
+│                          │   VPN / WAN     │                                │
+│                          └────────┬────────┘                                │
+│                                   │                                         │
+│  ┌────────────────────────────────▼─────────────────────────────────────┐  │
+│  │                         DATA CENTER                                   │  │
+│  │                                                                       │  │
+│  │   ┌─────────────┐    ┌─────────────┐    ┌─────────────────────────┐  │  │
+│  │   │ HSE Backend │    │ PostgreSQL  │    │ MinIO Cluster           │  │  │
+│  │   │ FastAPI     │◄──►│ Database    │    │ ┌─────┐┌─────┐          │  │  │
+│  │   │ Port 8001   │    │ Port 5432   │    │ │NAS 1││NAS 2│          │  │  │
+│  │   └──────┬──────┘    └─────────────┘    │ └─────┘└─────┘          │  │  │
+│  │          │                              │ ┌─────┐┌─────┐          │  │  │
+│  │          │                              │ │NAS 3││NAS 4│          │  │  │
+│  │          ▼                              │ └─────┘└─────┘          │  │  │
+│  │   ┌─────────────┐                       │ Port 9000/9001          │  │  │
+│  │   │  Telegram   │                       └─────────────────────────┘  │  │
+│  │   │  Bot API    │                                                    │  │
+│  │   └─────────────┘                                                    │  │
+│  │                                                                       │  │
+│  └───────────────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│                          ┌─────────────────┐                                │
+│                          │  Angular Web    │                                │
+│                          │  Dashboard      │                                │
+│                          │  Port 80/443    │                                │
+│                          └─────────────────┘                                │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ## Features
 
@@ -679,4 +1144,224 @@ lsof -i :9001
 docker-compose logs app | grep MediaSync
 
 # Pastikan MINIO_ENABLED=true
+```
+
+---
+
+## Multiple AI Box (BM-APP) Configuration
+
+Sistem mendukung multiple AI Box yang tersebar di berbagai lokasi. Setiap AI Box memiliki kamera, AI detection, dan WebSocket sendiri.
+
+### Database Model: AIBox
+
+```sql
+CREATE TABLE ai_boxes (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name VARCHAR(100) NOT NULL,              -- "Site Semarang", "Site Pekalongan"
+    code VARCHAR(20) UNIQUE NOT NULL,        -- "SMG", "PKL", "CLP"
+    api_url VARCHAR(500) NOT NULL,           -- http://10.0.1.10:2323/api
+    alarm_ws_url VARCHAR(500) NOT NULL,      -- ws://10.0.1.10:2323/alarm/
+    webrtc_url VARCHAR(500) NOT NULL,        -- http://10.0.1.10:2323/webrtc
+    mqtt_host VARCHAR(200),                  -- 10.0.1.10
+    mqtt_port INTEGER DEFAULT 1883,
+    is_active BOOLEAN DEFAULT true,
+    is_online BOOLEAN DEFAULT false,
+    last_seen_at TIMESTAMP,
+    created_at TIMESTAMP DEFAULT NOW(),
+    updated_at TIMESTAMP DEFAULT NOW()
+);
+
+-- Link video sources to AI Box
+ALTER TABLE video_sources ADD COLUMN aibox_id UUID REFERENCES ai_boxes(id);
+
+-- Link alarms to AI Box (denormalized for performance)
+ALTER TABLE alarms ADD COLUMN aibox_id UUID REFERENCES ai_boxes(id);
+ALTER TABLE alarms ADD COLUMN aibox_name VARCHAR(100);
+
+-- Link recordings to AI Box
+ALTER TABLE recordings ADD COLUMN aibox_id UUID REFERENCES ai_boxes(id);
+```
+
+### Environment Variables
+
+```ini
+# Legacy single AI Box (masih didukung untuk backward compatibility)
+BMAPP_ENABLED=true
+BMAPP_API_URL=http://103.75.84.183:2323/api
+BMAPP_ALARM_WS_URL=ws://103.75.84.183:2323/alarm/
+BMAPP_WEBRTC_URL=http://103.75.84.183:2323/webrtc
+
+# Multiple AI Box mode (override legacy jika enabled)
+MULTI_AIBOX_ENABLED=true
+```
+
+### API Endpoints - AI Box Management
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/ai-boxes` | List semua AI Box |
+| GET | `/ai-boxes/{id}` | Get detail AI Box |
+| POST | `/ai-boxes` | Tambah AI Box baru |
+| PUT | `/ai-boxes/{id}` | Update AI Box |
+| DELETE | `/ai-boxes/{id}` | Hapus AI Box |
+| GET | `/ai-boxes/{id}/status` | Cek status koneksi |
+| POST | `/ai-boxes/{id}/sync-cameras` | Sync kamera dari AI Box |
+| GET | `/ai-boxes/{id}/cameras` | List kamera di AI Box |
+
+### WebSocket Manager untuk Multiple AI Box
+
+```python
+class MultiAIBoxWebSocketManager:
+    """Manages WebSocket connections to multiple AI Boxes"""
+
+    def __init__(self):
+        self.connections: Dict[UUID, WebSocketConnection] = {}
+        self.reconnect_tasks: Dict[UUID, asyncio.Task] = {}
+
+    async def connect_all(self, db: Session):
+        """Connect to all active AI Boxes on startup"""
+        ai_boxes = db.query(AIBox).filter(AIBox.is_active == True).all()
+        for box in ai_boxes:
+            await self.connect(box)
+
+    async def connect(self, ai_box: AIBox):
+        """Connect to single AI Box WebSocket"""
+        try:
+            ws = await websockets.connect(ai_box.alarm_ws_url)
+            self.connections[ai_box.id] = ws
+            ai_box.is_online = True
+            ai_box.last_seen_at = datetime.utcnow()
+            asyncio.create_task(self._listen(ai_box, ws))
+        except Exception as e:
+            ai_box.is_online = False
+            self._schedule_reconnect(ai_box)
+
+    async def _listen(self, ai_box: AIBox, ws):
+        """Listen for alarms from AI Box"""
+        async for message in ws:
+            alarm_data = json.loads(message)
+            alarm_data['aibox_id'] = str(ai_box.id)
+            alarm_data['aibox_name'] = ai_box.name
+            await self._process_alarm(alarm_data)
+```
+
+### Contoh Konfigurasi Multi-Site
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│  AI Box Registry                                                 │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ ID: 550e8400-e29b-41d4-a716-446655440001                │   │
+│  │ Name: Site Semarang                                      │   │
+│  │ Code: SMG                                                │   │
+│  │ API: http://103.75.84.183:2323/api                      │   │
+│  │ WS: ws://103.75.84.183:2323/alarm/                      │   │
+│  │ WebRTC: http://103.75.84.183:2323/webrtc                │   │
+│  │ MQTT: 103.75.84.183:1883                                │   │
+│  │ Status: 🟢 Online | Cameras: 4 | Last Seen: 2 min ago   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ ID: 550e8400-e29b-41d4-a716-446655440002                │   │
+│  │ Name: Site Pekalongan                                    │   │
+│  │ Code: PKL                                                │   │
+│  │ API: http://192.168.1.100:2323/api                      │   │
+│  │ WS: ws://192.168.1.100:2323/alarm/                      │   │
+│  │ WebRTC: http://192.168.1.100:2323/webrtc                │   │
+│  │ MQTT: 192.168.1.100:1883                                │   │
+│  │ Status: 🟢 Online | Cameras: 8 | Last Seen: 1 min ago   │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐   │
+│  │ ID: 550e8400-e29b-41d4-a716-446655440003                │   │
+│  │ Name: Site Cilacap                                       │   │
+│  │ Code: CLP                                                │   │
+│  │ API: http://10.0.50.10:2323/api                         │   │
+│  │ WS: ws://10.0.50.10:2323/alarm/                         │   │
+│  │ WebRTC: http://10.0.50.10:2323/webrtc                   │   │
+│  │ MQTT: 10.0.50.10:1883                                   │   │
+│  │ Status: 🔴 Offline | Cameras: 6 | Last Seen: 15 min ago │   │
+│  └─────────────────────────────────────────────────────────┘   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+### Frontend: AI Box Selector
+
+Di halaman Monitoring AI, user bisa memilih AI Box mana yang ingin dilihat:
+
+```typescript
+// Component
+selectedAiBox = signal<AIBox | null>(null);
+aiBoxes = signal<AIBox[]>([]);
+
+async loadAiBoxes() {
+  const boxes = await this.aiBoxService.getAll();
+  this.aiBoxes.set(boxes);
+  // Auto-select first online box
+  const onlineBox = boxes.find(b => b.is_online);
+  if (onlineBox) this.selectedAiBox.set(onlineBox);
+}
+
+onAiBoxChange(box: AIBox) {
+  this.selectedAiBox.set(box);
+  // Reload cameras from selected AI Box
+  this.loadCameras(box.id);
+  // Reconnect WebSocket to selected box
+  this.reconnectAlarmWs(box.alarm_ws_url);
+}
+```
+
+### Alarm dengan Source AI Box
+
+Setiap alarm menyimpan informasi dari AI Box mana asalnya:
+
+```json
+{
+  "id": "uuid-alarm-123",
+  "alarm_type": "NoHelmet",
+  "camera_name": "Entrance Gate",
+  "aibox_id": "uuid-aibox-smg",
+  "aibox_name": "Site Semarang",
+  "alarm_time": "2024-01-28T10:30:00Z",
+  "image_url": "http://103.75.84.183:2323/...",
+  "minio_image_path": "alarm-images/2024/01/28/..."
+}
+```
+
+### Filter Alarm by AI Box
+
+```http
+GET /alarms?aibox_id=uuid-aibox-smg&limit=100
+
+# Response includes aibox info
+{
+  "items": [
+    {
+      "id": "...",
+      "alarm_type": "NoHelmet",
+      "aibox_name": "Site Semarang",
+      ...
+    }
+  ]
+}
+```
+
+### Health Monitoring
+
+```http
+GET /ai-boxes/health
+
+{
+  "total": 3,
+  "online": 2,
+  "offline": 1,
+  "boxes": [
+    {"id": "...", "name": "Site Semarang", "status": "online", "latency_ms": 45},
+    {"id": "...", "name": "Site Pekalongan", "status": "online", "latency_ms": 120},
+    {"id": "...", "name": "Site Cilacap", "status": "offline", "last_error": "Connection refused"}
+  ]
+}
 ```

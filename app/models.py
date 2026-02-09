@@ -76,6 +76,27 @@ class Permission(Base):
     roles: Mapped[List["Role"]] = relationship("Role", secondary=role_permissions, back_populates="permissions", lazy="selectin")
 
 
+class AIBox(Base):
+    """AI Box / BM-APP instance"""
+    __tablename__ = "ai_boxes"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    name: Mapped[str] = mapped_column(String(100), nullable=False)  # "Site Semarang", "Site Pekalongan"
+    code: Mapped[str] = mapped_column(String(20), unique=True, index=True, nullable=False)  # "SMG", "PKL"
+    api_url: Mapped[str] = mapped_column(String(500), nullable=False)  # http://103.75.84.183:2323/api
+    alarm_ws_url: Mapped[str] = mapped_column(String(500), nullable=False)  # ws://103.75.84.183:2323/alarm/
+    stream_ws_url: Mapped[str] = mapped_column(String(500), nullable=False)  # ws://103.75.84.183:2323/ws (for video)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
+    last_error: Mapped[str | None] = mapped_column(String(500))
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    # Relationships
+    video_sources: Mapped[List["VideoSource"]] = relationship("VideoSource", back_populates="aibox", lazy="selectin")
+
+
 class VideoSource(Base):
     __tablename__ = "video_sources"
 
@@ -87,6 +108,7 @@ class VideoSource(Base):
     description: Mapped[str | None] = mapped_column(String(500))
     location: Mapped[str | None] = mapped_column(String(200))
     group_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("camera_groups.id", ondelete="SET NULL"))
+    aibox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_boxes.id", ondelete="SET NULL"), index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     sound_alert: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Play sound when alarm detected
     is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)  # Synced to BM-APP
@@ -96,6 +118,7 @@ class VideoSource(Base):
     created_by_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"))
     created_by: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], lazy="selectin")
     group: Mapped["CameraGroup | None"] = relationship("CameraGroup", lazy="selectin")
+    aibox: Mapped["AIBox | None"] = relationship("AIBox", back_populates="video_sources", lazy="selectin")
     ai_tasks: Mapped[List["AITask"]] = relationship("AITask", back_populates="video_source", lazy="selectin")
     # Users (operators) who have access to this camera
     assigned_users: Mapped[List["User"]] = relationship("User", secondary=user_video_sources, back_populates="assigned_video_sources", lazy="selectin")
@@ -129,6 +152,8 @@ class Alarm(Base):
 
     id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
     bmapp_id: Mapped[str | None] = mapped_column(String(100), index=True)  # Original ID from BM-APP
+    aibox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_boxes.id", ondelete="SET NULL"), index=True)
+    aibox_name: Mapped[str | None] = mapped_column(String(100))  # Denormalized for display
     alarm_type: Mapped[str] = mapped_column(String(100), nullable=False, index=True)  # e.g. "NoHelmet", "Intrusion"
     alarm_name: Mapped[str] = mapped_column(String(200), nullable=False)
     camera_id: Mapped[str | None] = mapped_column(String(100), index=True)
@@ -151,6 +176,9 @@ class Alarm(Base):
     minio_labeled_image_path: Mapped[str | None] = mapped_column(String(500))  # Path for labeled image (with detection boxes)
     minio_video_path: Mapped[str | None] = mapped_column(String(500))  # Path in MinIO bucket
     minio_synced_at: Mapped[datetime | None] = mapped_column(DateTime)  # When synced to MinIO
+
+    # Relationships
+    aibox: Mapped["AIBox | None"] = relationship("AIBox", lazy="selectin")
 
 
 class CameraLocation(Base):

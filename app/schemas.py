@@ -94,6 +94,59 @@ class UserLogin(BaseModel):
     password: str
 
 
+# AI Box Schemas
+class AIBoxBase(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    code: str = Field(..., min_length=1, max_length=20, pattern="^[A-Z0-9_-]+$")
+    api_url: str = Field(..., min_length=1, max_length=500)
+    alarm_ws_url: str = Field(..., min_length=1, max_length=500)
+    stream_ws_url: str = Field(..., min_length=1, max_length=500)
+    is_active: bool = True
+
+
+class AIBoxCreate(AIBoxBase):
+    pass
+
+
+class AIBoxUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    code: Optional[str] = Field(None, min_length=1, max_length=20, pattern="^[A-Z0-9_-]+$")
+    api_url: Optional[str] = Field(None, min_length=1, max_length=500)
+    alarm_ws_url: Optional[str] = Field(None, min_length=1, max_length=500)
+    stream_ws_url: Optional[str] = Field(None, min_length=1, max_length=500)
+    is_active: Optional[bool] = None
+
+
+class AIBoxResponse(AIBoxBase):
+    id: UUID
+    is_online: bool = False
+    last_seen_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    created_at: datetime
+    updated_at: datetime
+    camera_count: int = 0  # Computed field
+
+    class Config:
+        from_attributes = True
+
+
+class AIBoxStatus(BaseModel):
+    id: UUID
+    name: str
+    code: str
+    is_online: bool
+    last_seen_at: Optional[datetime] = None
+    last_error: Optional[str] = None
+    latency_ms: Optional[int] = None
+
+
+class AIBoxHealthResponse(BaseModel):
+    total: int
+    online: int
+    offline: int
+    boxes: List[AIBoxStatus]
+
+
 class VideoSourceBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     url: str = Field(..., min_length=1, max_length=500)
@@ -102,6 +155,7 @@ class VideoSourceBase(BaseModel):
     description: Optional[str] = None
     location: Optional[str] = None
     group_id: Optional[UUID] = None
+    aibox_id: Optional[UUID] = None
     is_active: bool = True
     sound_alert: bool = False
 
@@ -118,6 +172,7 @@ class VideoSourceUpdate(BaseModel):
     description: Optional[str] = None
     location: Optional[str] = None
     group_id: Optional[UUID] = None
+    aibox_id: Optional[UUID] = None
     is_active: Optional[bool] = None
     sound_alert: Optional[bool] = None
 
@@ -132,6 +187,7 @@ class VideoSourceResponse(BaseModel):
     description: Optional[str] = None
     location: Optional[str] = None
     group_id: Optional[UUID] = None
+    aibox_id: Optional[UUID] = None
     is_active: bool
     sound_alert: bool
     is_synced_bmapp: bool = False
@@ -202,6 +258,8 @@ class AlarmBase(BaseModel):
 
 class AlarmCreate(AlarmBase):
     bmapp_id: Optional[str] = None
+    aibox_id: Optional[UUID] = None
+    aibox_name: Optional[str] = None
     raw_data: Optional[str] = None
     alarm_time: datetime
 
@@ -209,6 +267,8 @@ class AlarmCreate(AlarmBase):
 class AlarmResponse(AlarmBase):
     id: UUID
     bmapp_id: Optional[str] = None
+    aibox_id: Optional[UUID] = None
+    aibox_name: Optional[str] = None
     status: str
     alarm_time: datetime
     created_at: datetime
