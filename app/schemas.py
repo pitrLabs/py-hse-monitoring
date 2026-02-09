@@ -398,7 +398,7 @@ class RecordingBase(BaseModel):
     camera_id: Optional[str] = None
     camera_name: Optional[str] = None
     task_session: Optional[str] = None
-    trigger_type: str = Field(default="alarm", pattern="^(alarm|manual|schedule)$")
+    trigger_type: str = Field(default="alarm", pattern="^(alarm|manual|schedule|auto)$")
     thumbnail_url: Optional[str] = None
 
 
