@@ -84,15 +84,10 @@ class CameraRecorder:
             # -t: duration in seconds
             # -c copy: copy codec without re-encoding (faster)
             # -y: overwrite output file
-            # -rw_timeout: read/write timeout in microseconds (universal option)
-            # -analyzeduration: max duration for analyzing input (increased for slow connections)
-            # -probesize: max bytes to probe input (increased for reliability)
+            # Note: Timeout options vary by FFmpeg version, using basic options for compatibility
             cmd = [
                 "ffmpeg",
                 "-rtsp_transport", "tcp",  # Use TCP for more reliable streaming
-                "-rw_timeout", "30000000",  # 30 second read/write timeout (microseconds)
-                "-analyzeduration", "10000000",  # 10 seconds
-                "-probesize", "10000000",  # 10MB
                 "-i", self.rtsp_url,
                 "-t", str(CHUNK_DURATION_SECONDS),
                 "-c", "copy",
@@ -508,6 +503,7 @@ class AutoRecorderService:
 
                             # Only record cameras with status 4 (Healthy)
                             if status_type == 4:
+                                print(f"[AutoRecorder] Camera {media_name} is healthy (status 4), fetching RTSP URL...")
                                 # Try to get RTSP URL from media fetch
                                 rtsp_url = await self._get_media_url(aibox, media_name)
 
@@ -518,7 +514,9 @@ class AutoRecorderService:
                                         "rtsp_url": rtsp_url
                                     }
                                     cameras.append(camera_info)
-                                    print(f"[AutoRecorder] Found healthy camera: {camera_info['name']}")
+                                    print(f"[AutoRecorder] Found healthy camera: {camera_info['name']} -> {rtsp_url[:60]}...")
+                                else:
+                                    print(f"[AutoRecorder] No RTSP URL found for healthy camera: {media_name}")
 
                         except Exception as e:
                             print(f"[AutoRecorder] Error parsing task: {e}")
@@ -546,9 +544,11 @@ class AutoRecorderService:
         try:
             api_url = aibox.api_url.rstrip("/")
             full_url = f"{api_url}/alg_media_fetch"
+            print(f"[AutoRecorder] Fetching media list from: {full_url}")
 
             async with httpx.AsyncClient(timeout=10.0) as client:
                 response = await client.post(full_url, json={})
+                print(f"[AutoRecorder] Media fetch response: {response.status_code}")
 
                 if response.status_code == 200:
                     data = response.json()
@@ -559,6 +559,7 @@ class AutoRecorderService:
 
                     # Content is array of media items
                     media_list = data.get("Content", [])
+                    print(f"[AutoRecorder] Found {len(media_list)} media items, looking for '{media_name}'")
 
                     for media in media_list:
                         # Parse JSON if it's a string
@@ -571,12 +572,29 @@ class AutoRecorderService:
                         else:
                             media_config = media
 
+                        # Also check root level MediaName
+                        current_media_name = media_config.get("MediaName") or media.get("MediaName", "")
+
                         # Match by MediaName
-                        if media_config.get("MediaName") == media_name:
-                            rtsp_url = media_config.get("MediaUrl", "")
+                        if current_media_name == media_name:
+                            rtsp_url = media_config.get("MediaUrl") or media.get("MediaUrl", "")
                             if rtsp_url:
-                                print(f"[AutoRecorder] Found RTSP URL for {media_name}: {rtsp_url[:50]}...")
+                                print(f"[AutoRecorder] Found RTSP URL for {media_name}: {rtsp_url[:60]}...")
                                 return rtsp_url
+                            else:
+                                print(f"[AutoRecorder] Found media {media_name} but no MediaUrl")
+
+                    # Debug: Print first media item structure
+                    if media_list:
+                        first_media = media_list[0]
+                        print(f"[AutoRecorder] Sample media keys: {list(first_media.keys())}")
+                        if "json" in first_media:
+                            try:
+                                parsed = json_lib.loads(first_media["json"]) if isinstance(first_media["json"], str) else first_media["json"]
+                                print(f"[AutoRecorder] Sample media.json keys: {list(parsed.keys()) if isinstance(parsed, dict) else 'not dict'}")
+                                print(f"[AutoRecorder] Sample MediaName from json: {parsed.get('MediaName', 'N/A')}")
+                            except:
+                                pass
 
                     print(f"[AutoRecorder] No media found with name: {media_name}")
 

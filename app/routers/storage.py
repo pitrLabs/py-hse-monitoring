@@ -318,13 +318,10 @@ async def test_record(
         filename = f"test_record_{uuid4().hex[:8]}.mp4"
         filepath = os.path.join(tempfile.gettempdir(), filename)
 
-        # FFmpeg command with extended timeouts for high latency connections
+        # FFmpeg command - basic options for compatibility across FFmpeg versions
         cmd = [
             "ffmpeg",
             "-rtsp_transport", "tcp",
-            "-rw_timeout", "30000000",  # 30 second read/write timeout (microseconds)
-            "-analyzeduration", "10000000",  # 10 seconds
-            "-probesize", "10000000",  # 10MB
             "-i", rtsp_url,
             "-t", str(duration_seconds),
             "-c", "copy",
