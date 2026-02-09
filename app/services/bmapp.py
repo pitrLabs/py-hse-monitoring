@@ -221,6 +221,10 @@ class BmAppAlarmListener:
         image_data_base64 = data.get("ImageData") or data.get("imageData") or ""
         labeled_image_data_base64 = data.get("ImageDataLabeled") or data.get("imageDataLabeled") or ""
 
+        # Debug logging for image data
+        print(f"[BmApp] Alarm parsed - imageUrl: {image_url[:100] if image_url else 'NONE'}")
+        print(f"[BmApp] ImageData: {len(image_data_base64)} chars, ImageDataLabeled: {len(labeled_image_data_base64)} chars")
+
         # ===== VIDEO URL =====
         video_url = (
             data.get("VideoFile") or
