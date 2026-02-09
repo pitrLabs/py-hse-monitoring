@@ -3,6 +3,7 @@ Storage Router
 Health check and statistics for MinIO storage.
 """
 from typing import List
+from uuid import uuid4
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
@@ -109,6 +110,277 @@ def storage_diagnostic(
         "alarms_pending_sync": alarms_pending_sync,
         "sample_pending_alarm": sample_info
     }
+
+
+@router.get("/debug")
+async def storage_debug(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Comprehensive debug endpoint for MinIO and auto-recorder issues."""
+    import subprocess
+    import httpx
+
+    debug_info = {
+        "minio": {},
+        "ffmpeg": {},
+        "auto_recorder": {},
+        "aiboxes": []
+    }
+
+    # 1. Check MinIO configuration
+    debug_info["minio"]["enabled"] = settings.minio_enabled
+    debug_info["minio"]["endpoint"] = settings.minio_endpoint
+    debug_info["minio"]["access_key"] = settings.minio_access_key[:3] + "***"  # Masked
+    debug_info["minio"]["secret_key_length"] = len(settings.minio_secret_key)
+    debug_info["minio"]["buckets_config"] = {
+        "alarm_images": settings.minio_bucket_alarm_images,
+        "recordings": settings.minio_bucket_recordings,
+        "local_videos": settings.minio_bucket_local_videos
+    }
+
+    # 2. Test MinIO connection
+    storage = get_minio_storage()
+    debug_info["minio"]["initialized"] = storage.is_initialized
+
+    if storage.is_initialized:
+        try:
+            health = storage.health_check()
+            debug_info["minio"]["health"] = health
+
+            # List bucket contents
+            for bucket_name in [settings.minio_bucket_recordings, settings.minio_bucket_alarm_images]:
+                try:
+                    objects = storage.list_objects(bucket_name)
+                    debug_info["minio"][f"bucket_{bucket_name}"] = {
+                        "object_count": len(objects),
+                        "objects": objects[:5] if objects else []  # First 5 objects
+                    }
+                except Exception as e:
+                    debug_info["minio"][f"bucket_{bucket_name}"] = {"error": str(e)}
+        except Exception as e:
+            debug_info["minio"]["health_error"] = str(e)
+    else:
+        # Try to initialize and capture error
+        try:
+            storage.initialize()
+            debug_info["minio"]["init_retry"] = "success"
+        except Exception as e:
+            debug_info["minio"]["init_error"] = str(e)
+            import traceback
+            debug_info["minio"]["init_traceback"] = traceback.format_exc()
+
+    # 3. Check FFmpeg
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=5
+        )
+        debug_info["ffmpeg"]["available"] = result.returncode == 0
+        debug_info["ffmpeg"]["version"] = result.stdout.decode()[:200] if result.returncode == 0 else None
+    except FileNotFoundError:
+        debug_info["ffmpeg"]["available"] = False
+        debug_info["ffmpeg"]["error"] = "FFmpeg not found in PATH"
+    except Exception as e:
+        debug_info["ffmpeg"]["available"] = False
+        debug_info["ffmpeg"]["error"] = str(e)
+
+    # 4. Check auto-recorder service
+    auto_recorder_svc = get_auto_recorder_service()
+    if auto_recorder_svc:
+        debug_info["auto_recorder"]["service_exists"] = True
+        debug_info["auto_recorder"]["running"] = auto_recorder_svc.running
+        debug_info["auto_recorder"]["active_recorders"] = len(auto_recorder_svc.recorders)
+        debug_info["auto_recorder"]["recorder_details"] = []
+
+        for camera_id, recorder in auto_recorder_svc.recorders.items():
+            debug_info["auto_recorder"]["recorder_details"].append({
+                "camera_id": camera_id,
+                "camera_name": recorder.camera_name,
+                "rtsp_url": recorder.rtsp_url[:50] + "..." if recorder.rtsp_url else None,
+                "is_recording": recorder.is_recording,
+                "current_file": recorder.current_file
+            })
+    else:
+        debug_info["auto_recorder"]["service_exists"] = False
+        debug_info["auto_recorder"]["error"] = "Auto-recorder service not started"
+
+    # 5. Check AI Boxes and their cameras
+    aiboxes = db.query(AIBox).filter(AIBox.is_active == True).all()
+    debug_info["aiboxes_count"] = len(aiboxes)
+
+    for aibox in aiboxes[:2]:  # Check first 2 boxes
+        box_debug = {
+            "id": str(aibox.id),
+            "name": aibox.name,
+            "api_url": aibox.api_url,
+            "cameras": []
+        }
+
+        try:
+            api_url = aibox.api_url.rstrip("/")
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                # Fetch tasks
+                task_resp = await client.post(f"{api_url}/alg_task_fetch", json={})
+                if task_resp.status_code == 200:
+                    task_data = task_resp.json()
+                    if task_data.get("Result", {}).get("Code") == 0:
+                        tasks = task_data.get("Content", [])
+                        box_debug["task_count"] = len(tasks)
+
+                        # Check for healthy cameras
+                        healthy_count = 0
+                        for task in tasks:
+                            import json as json_lib
+                            try:
+                                task_json = task.get("json", "{}")
+                                if isinstance(task_json, str):
+                                    task_config = json_lib.loads(task_json)
+                                else:
+                                    task_config = task_json
+                            except:
+                                task_config = {}
+
+                            status = task.get("AlgTaskStatus", {})
+                            status_type = status.get("type", 0) if isinstance(status, dict) else 0
+                            media_name = task_config.get("MediaName", "")
+
+                            if status_type == 4:
+                                healthy_count += 1
+                                box_debug["cameras"].append({
+                                    "name": media_name,
+                                    "status": "Healthy",
+                                    "status_type": status_type
+                                })
+
+                        box_debug["healthy_cameras"] = healthy_count
+
+                # Fetch media list to get RTSP URLs
+                media_resp = await client.post(f"{api_url}/alg_media_fetch", json={})
+                if media_resp.status_code == 200:
+                    media_data = media_resp.json()
+                    if media_data.get("Result", {}).get("Code") == 0:
+                        media_list = media_data.get("Content", [])
+                        box_debug["media_count"] = len(media_list)
+
+                        # Get first RTSP URL for testing
+                        if media_list:
+                            first_media = media_list[0]
+                            import json as json_lib
+                            try:
+                                if isinstance(first_media.get("json"), str):
+                                    media_config = json_lib.loads(first_media.get("json", "{}"))
+                                else:
+                                    media_config = first_media
+                            except:
+                                media_config = first_media
+
+                            rtsp_url = media_config.get("MediaUrl", "")
+                            box_debug["sample_rtsp_url"] = rtsp_url[:60] + "..." if rtsp_url else None
+
+        except Exception as e:
+            box_debug["error"] = str(e)
+
+        debug_info["aiboxes"].append(box_debug)
+
+    return debug_info
+
+
+@router.post("/test-record")
+async def test_record(
+    rtsp_url: str,
+    duration_seconds: int = 5,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Test recording from an RTSP URL for a short duration.
+    This helps debug FFmpeg and RTSP connectivity issues.
+    """
+    import subprocess
+    import tempfile
+    import os
+
+    result = {
+        "rtsp_url": rtsp_url[:50] + "..." if len(rtsp_url) > 50 else rtsp_url,
+        "duration_seconds": duration_seconds,
+        "success": False
+    }
+
+    # Limit duration for safety
+    duration_seconds = min(duration_seconds, 10)
+
+    try:
+        # Generate temp file
+        filename = f"test_record_{uuid4().hex[:8]}.mp4"
+        filepath = os.path.join(tempfile.gettempdir(), filename)
+
+        # FFmpeg command
+        cmd = [
+            "ffmpeg",
+            "-rtsp_transport", "tcp",
+            "-i", rtsp_url,
+            "-t", str(duration_seconds),
+            "-c", "copy",
+            "-y",
+            filepath
+        ]
+
+        result["ffmpeg_cmd"] = " ".join(cmd[:6]) + " ..."  # Truncated for security
+
+        # Run FFmpeg
+        process = subprocess.run(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=duration_seconds + 30
+        )
+
+        result["ffmpeg_returncode"] = process.returncode
+        result["ffmpeg_stderr"] = process.stderr.decode('utf-8', errors='ignore')[-500:]
+
+        # Check if file was created
+        if os.path.exists(filepath):
+            file_size = os.path.getsize(filepath)
+            result["file_created"] = True
+            result["file_size"] = file_size
+            result["success"] = file_size > 0
+
+            # Upload to MinIO if successful
+            if result["success"]:
+                storage = get_minio_storage()
+                if storage.is_initialized:
+                    object_name = f"test/{filename}"
+                    with open(filepath, "rb") as f:
+                        upload_result = storage.upload_file(
+                            settings.minio_bucket_recordings,
+                            object_name,
+                            f,
+                            "video/mp4",
+                            file_size
+                        )
+                    result["minio_upload"] = upload_result is not None
+                    result["minio_path"] = object_name if upload_result else None
+                else:
+                    result["minio_upload"] = False
+                    result["minio_error"] = "MinIO not initialized"
+
+            # Cleanup
+            os.remove(filepath)
+        else:
+            result["file_created"] = False
+
+    except subprocess.TimeoutExpired:
+        result["error"] = "FFmpeg timed out"
+    except Exception as e:
+        result["error"] = str(e)
+        import traceback
+        result["traceback"] = traceback.format_exc()
+
+    return result
 
 
 @router.get("/auto-recorder/status")

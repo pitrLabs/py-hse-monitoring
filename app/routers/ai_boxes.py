@@ -347,3 +347,124 @@ def get_ai_box_cameras(
     ).order_by(VideoSource.name).all()
 
     return cameras
+
+
+@router.post("/{aibox_id}/sync-cameras")
+async def sync_cameras_from_aibox(
+    aibox_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Sync cameras from an AI Box's BM-APP API.
+
+    This will:
+    1. Fetch all media from the AI Box's BM-APP API
+    2. Create VideoSource entries with aibox_id set
+    3. Update existing entries if stream_name matches
+    """
+    ai_box = db.query(AIBox).filter(AIBox.id == aibox_id).first()
+    if not ai_box:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="AI Box not found"
+        )
+
+    # Fetch media list from BM-APP API
+    api_url = ai_box.api_url.rstrip("/")
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            response = await client.post(f"{api_url}/alg_media_fetch", json={})
+
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"BM-APP returned status {response.status_code}"
+                )
+
+            data = response.json()
+            result_code = data.get("Result", {}).get("Code", -1)
+
+            if result_code != 0:
+                error_desc = data.get("Result", {}).get("Desc", "Unknown error")
+                raise HTTPException(
+                    status_code=status.HTTP_502_BAD_GATEWAY,
+                    detail=f"BM-APP error: {error_desc}"
+                )
+
+            media_list = data.get("Content", [])
+    except httpx.RequestError as e:
+        raise HTTPException(
+            status_code=status.HTTP_502_BAD_GATEWAY,
+            detail=f"Failed to connect to BM-APP: {str(e)}"
+        )
+
+    imported = 0
+    updated = 0
+    skipped = 0
+    errors = []
+
+    for media in media_list:
+        media_name = media.get("MediaName", "")
+        media_url = media.get("MediaUrl", "")
+        media_desc = media.get("MediaDesc", "")
+
+        if not media_name or not media_url:
+            skipped += 1
+            continue
+
+        # Check if already exists by stream_name
+        existing = db.query(VideoSource).filter(VideoSource.stream_name == media_name).first()
+
+        if existing:
+            # Update aibox_id if not set or different
+            if existing.aibox_id != aibox_id:
+                existing.aibox_id = aibox_id
+                existing.is_synced_bmapp = True
+                updated += 1
+            else:
+                skipped += 1
+            continue
+
+        # Determine source type from URL
+        source_type = "rtsp"
+        if media_url.startswith("http"):
+            source_type = "http"
+        elif media_url.startswith("file"):
+            source_type = "file"
+
+        # Create new video source with aibox_id
+        try:
+            db_video_source = VideoSource(
+                name=media_name,
+                url=media_url,
+                stream_name=media_name,
+                source_type=source_type,
+                description=media_desc,
+                is_active=True,
+                is_synced_bmapp=True,
+                aibox_id=aibox_id,
+                created_by_id=current_user.id
+            )
+            db.add(db_video_source)
+            imported += 1
+        except Exception as e:
+            errors.append(f"Failed to create {media_name}: {str(e)}")
+
+    db.commit()
+
+    # Get updated camera count
+    camera_count = db.query(func.count(VideoSource.id)).filter(
+        VideoSource.aibox_id == aibox_id
+    ).scalar() or 0
+
+    return {
+        "message": "Sync completed",
+        "aibox_id": str(aibox_id),
+        "aibox_name": ai_box.name,
+        "imported": imported,
+        "updated": updated,
+        "skipped": skipped,
+        "total_from_bmapp": len(media_list),
+        "camera_count": camera_count,
+        "errors": errors if errors else None
+    }
