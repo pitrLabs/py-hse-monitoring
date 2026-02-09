@@ -425,43 +425,70 @@ class AutoRecorderService:
         cameras = []
 
         try:
-            # Fetch tasks from BM-APP API
+            # Fetch tasks from BM-APP API (correct endpoint is /alg_task_fetch)
             api_url = aibox.api_url.rstrip("/")
-            full_url = f"{api_url}/app_task_status"
+            full_url = f"{api_url}/alg_task_fetch"
             print(f"[AutoRecorder] Fetching task status from: {full_url}")
 
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(full_url)
+                # BM-APP requires POST request, not GET
+                response = await client.post(full_url, json={})
                 print(f"[AutoRecorder] Response status: {response.status_code}")
 
                 if response.status_code == 200:
                     data = response.json()
-                    tasks = data.get("TaskList", [])
-                    print(f"[AutoRecorder] Found {len(tasks)} tasks from {aibox.name}")
+                    # Check if request was successful (Code=0)
+                    result_code = data.get("Result", {}).get("Code", -1)
+                    if result_code != 0:
+                        print(f"[AutoRecorder] API error: {data.get('Result', {}).get('Desc', 'Unknown')}")
+                        return cameras
+
+                    # Response is in "Content" array, each item has "json" field with task config
+                    raw_tasks = data.get("Content", [])
+                    print(f"[AutoRecorder] Found {len(raw_tasks)} tasks from {aibox.name}")
+
+                    # Parse the JSON config from each task
+                    tasks = []
+                    for raw_task in raw_tasks:
+                        try:
+                            import json as json_lib
+                            task_json = raw_task.get("json", "{}")
+                            if isinstance(task_json, str):
+                                task_config = json_lib.loads(task_json)
+                            else:
+                                task_config = task_json
+                            # Merge with raw task info
+                            task_config["_raw"] = raw_task
+                            tasks.append(task_config)
+                        except Exception as parse_err:
+                            print(f"[AutoRecorder] Failed to parse task: {parse_err}")
+                            continue
 
                     for task in tasks:
-                        # Check AlgTaskStatus.type - 4=Healthy means stream is active
-                        alg_task_status = task.get("AlgTaskStatus", {})
-                        status_type = alg_task_status.get("type", 0) if isinstance(alg_task_status, dict) else 0
-                        task_name = task.get("AlgTaskSession", "unknown")
-                        media = task.get("Media", {}) or {}
-                        media_name = media.get("MediaName", "unknown")
+                        # Task config from parsed JSON
+                        task_session = task.get("AlgTaskSession", "")
+                        media_name = task.get("MediaName", task_session)
+                        raw_task = task.get("_raw", {})
 
-                        print(f"[AutoRecorder] Task: {task_name}, Media: {media_name}, Status: {status_type}")
+                        # Status might be in raw task data
+                        alg_task_status = raw_task.get("AlgTaskStatus", task.get("AlgTaskStatus", {}))
+                        status_type = alg_task_status.get("type", 0) if isinstance(alg_task_status, dict) else 0
+
+                        print(f"[AutoRecorder] Task: {task_session}, Media: {media_name}, Status: {status_type}")
 
                         # Only record cameras with status 4 (Healthy)
                         if status_type == 4:
-                            media = task.get("Media", {}) or {}
-                            rtsp_url = media.get("MediaUrl", "")
+                            # Try to get RTSP URL from media fetch
+                            rtsp_url = await self._get_media_url(aibox, media_name)
 
                             if rtsp_url:
                                 camera_info = {
-                                    "id": task.get("AlgTaskSession", task.get("MediaName", "")),
-                                    "name": media.get("MediaName", task.get("MediaName", "Unknown")),
+                                    "id": task_session or media_name,
+                                    "name": media_name,
                                     "rtsp_url": rtsp_url
                                 }
                                 cameras.append(camera_info)
-                                print(f"[AutoRecorder] Found healthy camera: {camera_info['name']} (status={status_type})")
+                                print(f"[AutoRecorder] Found healthy camera: {camera_info['name']}")
 
                     if cameras:
                         print(f"[AutoRecorder] Found {len(cameras)} healthy cameras from {aibox.name}")
@@ -470,12 +497,68 @@ class AutoRecorderService:
 
         except Exception as e:
             print(f"[AutoRecorder] Failed to get cameras from {aibox.name}: {e}")
+            import traceback
+            traceback.print_exc()
 
         return cameras
+
+    async def _get_media_url(self, aibox: AIBox, media_name: str) -> Optional[str]:
+        """
+        Get RTSP URL for a media/camera from BM-APP.
+        Uses /alg_media_fetch endpoint to get all configured media sources.
+        """
+        import httpx
+
+        try:
+            api_url = aibox.api_url.rstrip("/")
+            full_url = f"{api_url}/alg_media_fetch"
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post(full_url, json={})
+
+                if response.status_code == 200:
+                    data = response.json()
+                    result_code = data.get("Result", {}).get("Code", -1)
+                    if result_code != 0:
+                        print(f"[AutoRecorder] Media fetch API error: {data.get('Result', {}).get('Desc', 'Unknown')}")
+                        return None
+
+                    # Content is array of media items
+                    media_list = data.get("Content", [])
+
+                    for media in media_list:
+                        # Parse JSON if it's a string
+                        import json as json_lib
+                        if isinstance(media.get("json"), str):
+                            try:
+                                media_config = json_lib.loads(media.get("json", "{}"))
+                            except:
+                                media_config = media
+                        else:
+                            media_config = media
+
+                        # Match by MediaName
+                        if media_config.get("MediaName") == media_name:
+                            rtsp_url = media_config.get("MediaUrl", "")
+                            if rtsp_url:
+                                print(f"[AutoRecorder] Found RTSP URL for {media_name}: {rtsp_url[:50]}...")
+                                return rtsp_url
+
+                    print(f"[AutoRecorder] No media found with name: {media_name}")
+
+        except Exception as e:
+            print(f"[AutoRecorder] Failed to fetch media URL for {media_name}: {e}")
+
+        return None
 
 
 # Global instance
 _service: Optional[AutoRecorderService] = None
+
+
+def get_auto_recorder_service() -> Optional[AutoRecorderService]:
+    """Get the global auto-recorder service instance."""
+    return _service
 
 
 async def start_auto_recorder():
@@ -484,6 +567,7 @@ async def start_auto_recorder():
     if _service is None:
         _service = AutoRecorderService()
         await _service.start()
+    print(f"[AutoRecorder] Service instance: {_service}, running: {_service.running if _service else False}")
 
 
 def stop_auto_recorder():

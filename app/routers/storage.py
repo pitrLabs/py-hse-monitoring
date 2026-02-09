@@ -12,7 +12,7 @@ from app.models import User, Alarm, AIBox
 from app.config import settings
 from app.database import get_db
 from app.services.minio_storage import get_minio_storage
-from app.services.auto_recorder import _service as auto_recorder_service
+from app.services.auto_recorder import get_auto_recorder_service
 
 router = APIRouter(prefix="/storage", tags=["Storage"])
 
@@ -132,32 +132,65 @@ async def auto_recorder_status(
             "cameras": []
         }
 
-        # Try to fetch task status from BM-APP
+        # Fetch task status from BM-APP using POST /alg_task_fetch
         try:
+            import json as json_lib
             api_url = aibox.api_url.rstrip("/")
+            full_url = f"{api_url}/alg_task_fetch"
+            box_data["api_url_full"] = full_url
+
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{api_url}/app_task_status")
+                # BM-APP requires POST request
+                response = await client.post(full_url, json={})
+                box_data["api_status_code"] = response.status_code
+
                 if response.status_code == 200:
                     data = response.json()
-                    tasks = data.get("TaskList", [])
+                    # Check if request was successful (Code=0)
+                    result_code = data.get("Result", {}).get("Code", -1)
+                    box_data["api_result_code"] = result_code
 
-                    for task in tasks:
-                        alg_task_status = task.get("AlgTaskStatus", {})
+                    if result_code != 0:
+                        box_data["error"] = data.get("Result", {}).get("Desc", "Unknown API error")
+                        continue
+
+                    raw_tasks = data.get("Content", [])
+                    box_data["task_count"] = len(raw_tasks)
+
+                    for raw_task in raw_tasks:
+                        # Parse JSON config from task
+                        try:
+                            task_json = raw_task.get("json", "{}")
+                            if isinstance(task_json, str):
+                                task_config = json_lib.loads(task_json)
+                            else:
+                                task_config = task_json
+                        except:
+                            task_config = {}
+
+                        # Status is in raw task data
+                        alg_task_status = raw_task.get("AlgTaskStatus", task_config.get("AlgTaskStatus", {}))
                         status_type = alg_task_status.get("type", 0) if isinstance(alg_task_status, dict) else 0
-                        media = task.get("Media", {}) or {}
+
+                        # Media info might be in task config or parsed separately
+                        media_name = task_config.get("MediaName", raw_task.get("name", ""))
+                        task_session = task_config.get("AlgTaskSession", raw_task.get("session", ""))
 
                         box_data["cameras"].append({
-                            "task_session": task.get("AlgTaskSession", ""),
-                            "media_name": media.get("MediaName", ""),
-                            "media_url": media.get("MediaUrl", ""),
+                            "task_session": task_session,
+                            "media_name": media_name,
+                            "media_url": task_config.get("MediaUrl", ""),
                             "status_type": status_type,
                             "status_name": {0: "Stopped", 1: "Connecting", 4: "Healthy"}.get(status_type, f"Unknown({status_type})"),
                             "is_recordable": status_type == 4
                         })
                 else:
                     box_data["error"] = f"API returned status {response.status_code}"
+                    box_data["response_text"] = response.text[:500] if response.text else ""
         except Exception as e:
             box_data["error"] = str(e)
+            import traceback
+            box_data["traceback"] = traceback.format_exc()
 
         aibox_info.append(box_data)
 
@@ -168,11 +201,12 @@ async def auto_recorder_status(
         "recorder_details": []
     }
 
-    if auto_recorder_service:
-        service_status["running"] = auto_recorder_service.running
-        service_status["active_recorders"] = len(auto_recorder_service.recorders)
+    auto_recorder_svc = get_auto_recorder_service()
+    if auto_recorder_svc:
+        service_status["running"] = auto_recorder_svc.running
+        service_status["active_recorders"] = len(auto_recorder_svc.recorders)
 
-        for camera_id, recorder in auto_recorder_service.recorders.items():
+        for camera_id, recorder in auto_recorder_svc.recorders.items():
             service_status["recorder_details"].append({
                 "camera_id": camera_id,
                 "camera_name": recorder.camera_name,
