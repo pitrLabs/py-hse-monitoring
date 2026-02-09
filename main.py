@@ -74,7 +74,7 @@ async def delayed_mediamtx_sync():
 
 
 app = FastAPI(
-    title="HSE Object Detection Monitoring",
+    title="HSSE Object Detection Monitoring",
     description="User Management with Authentication, Roles, and Permissions",
     version="1.0.0",
     lifespan=lifespan

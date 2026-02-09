@@ -455,15 +455,22 @@ async def alarm_websocket(websocket: WebSocket):
 def _save_base64_image_to_minio(base64_data: str, prefix: str = "alarm") -> Optional[str]:
     """Decode base64 image and save to MinIO. Returns the object path or None."""
     if not base64_data:
+        print(f"[MinIO] No base64 data for {prefix}")
         return None
+
+    # Check data length for debugging
+    data_len = len(base64_data) if base64_data else 0
+    print(f"[MinIO] Received {prefix} base64 data: {data_len} chars")
 
     storage = get_minio_storage()
     if not storage.is_initialized:
+        print(f"[MinIO] Storage not initialized! Check MINIO_ENABLED and connection")
         return None
 
     try:
         # Decode base64 to bytes
         image_bytes = base64.b64decode(base64_data)
+        print(f"[MinIO] Decoded {prefix}: {len(image_bytes)} bytes")
 
         # Generate unique object name
         object_name = storage.generate_object_name(prefix, "jpg")
@@ -477,9 +484,12 @@ def _save_base64_image_to_minio(base64_data: str, prefix: str = "alarm") -> Opti
         )
 
         if result:
+            print(f"[MinIO] Saved {prefix}: {object_name}")
             return object_name
+        else:
+            print(f"[MinIO] Upload returned None for {prefix}")
     except Exception as e:
-        print(f"[Alarm] Failed to save image to MinIO: {e}")
+        print(f"[MinIO] Failed to save {prefix}: {e}")
 
     return None
 
@@ -501,15 +511,22 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     minio_image_path = None
     minio_labeled_image_path = None
 
-    # Save raw image
+    # Debug: Check what image data we received
     image_data_base64 = alarm_data.get("image_data_base64")
+    labeled_image_data_base64 = alarm_data.get("labeled_image_data_base64")
+    print(f"[Alarm] Image data check: raw={len(image_data_base64) if image_data_base64 else 0} chars, labeled={len(labeled_image_data_base64) if labeled_image_data_base64 else 0} chars")
+
+    # Save raw image
     if image_data_base64:
         minio_image_path = _save_base64_image_to_minio(image_data_base64, "alarm_raw")
+    else:
+        print("[Alarm] No raw image base64 data received from BM-APP")
 
     # Save labeled image (with detection boxes) - prioritize this!
-    labeled_image_data_base64 = alarm_data.get("labeled_image_data_base64")
     if labeled_image_data_base64:
         minio_labeled_image_path = _save_base64_image_to_minio(labeled_image_data_base64, "alarm_labeled")
+    else:
+        print("[Alarm] No labeled image base64 data received from BM-APP")
 
     # Parse aibox_id if provided (comes as string from parsed alarm)
     aibox_id = alarm_data.get("aibox_id")

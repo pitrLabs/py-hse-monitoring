@@ -8,7 +8,7 @@ from typing import Optional
 
 from app.config import settings
 from app.database import SessionLocal
-from app.models import Alarm, Recording
+from app.models import Alarm, Recording, AIBox
 from app.services.minio_storage import get_minio_storage
 
 
@@ -88,6 +88,7 @@ class MediaSyncService:
     async def _sync_all(self):
         """Run all sync tasks."""
         if not settings.minio_enabled:
+            print("[MediaSync] MinIO is disabled (MINIO_ENABLED=false), skipping sync")
             return
 
         storage = get_minio_storage()
@@ -95,11 +96,13 @@ class MediaSyncService:
             print("[MediaSync] MinIO not initialized, skipping sync")
             return
 
+        print("[MediaSync] Running sync cycle...")
         db = SessionLocal()
         try:
             await self._sync_alarm_images(db, storage)
             await self._sync_alarm_videos(db, storage)
             await self._sync_recordings(db, storage)
+            print("[MediaSync] Sync cycle complete")
         finally:
             db.close()
 
@@ -117,17 +120,29 @@ class MediaSyncService:
 
         print(f"[MediaSync] Syncing {len(alarms)} alarm images...")
         synced = 0
+        failed = 0
 
         for alarm in alarms:
             try:
                 # Build full URL if relative
                 image_url = alarm.image_url
                 if not image_url.startswith("http"):
-                    bmapp_base = settings.bmapp_api_url.replace("/api", "")
+                    # Get AI Box URL from database if aibox_id is available
+                    bmapp_base = None
+                    if alarm.aibox_id:
+                        aibox = db.query(AIBox).filter(AIBox.id == alarm.aibox_id).first()
+                        if aibox and aibox.api_url:
+                            bmapp_base = aibox.api_url.rsplit("/api", 1)[0]
+                    if not bmapp_base:
+                        # Fallback to config (deprecated)
+                        bmapp_base = settings.bmapp_api_url.replace("/api", "")
+
                     if image_url.startswith("/"):
                         image_url = f"{bmapp_base}{image_url}"
                     else:
                         image_url = f"{bmapp_base}/{image_url}"
+
+                print(f"[MediaSync] Downloading: {image_url}")
 
                 # Generate object name
                 extension = _get_extension_from_url(image_url)
@@ -146,13 +161,15 @@ class MediaSyncService:
                     alarm.minio_synced_at = datetime.utcnow()
                     db.commit()
                     synced += 1
+                else:
+                    failed += 1
 
             except Exception as e:
                 db.rollback()
+                failed += 1
                 print(f"[MediaSync] Failed to sync alarm image {alarm.id}: {e}")
 
-        if synced > 0:
-            print(f"[MediaSync] Synced {synced} alarm images")
+        print(f"[MediaSync] Alarm images: synced={synced}, failed={failed}")
 
     async def _sync_alarm_videos(self, db, storage):
         """Sync alarm videos from BM-APP to MinIO."""
@@ -168,17 +185,29 @@ class MediaSyncService:
 
         print(f"[MediaSync] Syncing {len(alarms)} alarm videos...")
         synced = 0
+        failed = 0
 
         for alarm in alarms:
             try:
                 # Build full URL if relative
                 video_url = alarm.video_url
                 if not video_url.startswith("http"):
-                    bmapp_base = settings.bmapp_api_url.replace("/api", "")
+                    # Get AI Box URL from database if aibox_id is available
+                    bmapp_base = None
+                    if alarm.aibox_id:
+                        aibox = db.query(AIBox).filter(AIBox.id == alarm.aibox_id).first()
+                        if aibox and aibox.api_url:
+                            bmapp_base = aibox.api_url.rsplit("/api", 1)[0]
+                    if not bmapp_base:
+                        # Fallback to config (deprecated)
+                        bmapp_base = settings.bmapp_api_url.replace("/api", "")
+
                     if video_url.startswith("/"):
                         video_url = f"{bmapp_base}{video_url}"
                     else:
                         video_url = f"{bmapp_base}/{video_url}"
+
+                print(f"[MediaSync] Downloading video: {video_url}")
 
                 # Generate object name
                 extension = _get_extension_from_url(video_url)
@@ -197,13 +226,15 @@ class MediaSyncService:
                     alarm.minio_synced_at = datetime.utcnow()
                     db.commit()
                     synced += 1
+                else:
+                    failed += 1
 
             except Exception as e:
                 db.rollback()
+                failed += 1
                 print(f"[MediaSync] Failed to sync alarm video {alarm.id}: {e}")
 
-        if synced > 0:
-            print(f"[MediaSync] Synced {synced} alarm videos")
+        print(f"[MediaSync] Alarm videos: synced={synced}, failed={failed}")
 
     async def _sync_recordings(self, db, storage):
         """Sync recordings from BM-APP to MinIO."""
@@ -219,17 +250,21 @@ class MediaSyncService:
 
         print(f"[MediaSync] Syncing {len(recordings)} recordings...")
         synced = 0
+        failed = 0
 
         for recording in recordings:
             try:
                 # Build full URL if relative
                 file_url = recording.file_url
                 if not file_url.startswith("http"):
+                    # Note: recordings don't have aibox_id, use config fallback
                     bmapp_base = settings.bmapp_api_url.replace("/api", "")
                     if file_url.startswith("/"):
                         file_url = f"{bmapp_base}{file_url}"
                     else:
                         file_url = f"{bmapp_base}/{file_url}"
+
+                print(f"[MediaSync] Downloading recording: {file_url}")
 
                 # Generate object name
                 extension = _get_extension_from_url(file_url)
@@ -248,13 +283,15 @@ class MediaSyncService:
                     recording.minio_synced_at = datetime.utcnow()
                     db.commit()
                     synced += 1
+                else:
+                    failed += 1
 
             except Exception as e:
                 db.rollback()
+                failed += 1
                 print(f"[MediaSync] Failed to sync recording {recording.id}: {e}")
 
-        if synced > 0:
-            print(f"[MediaSync] Synced {synced} recordings")
+        print(f"[MediaSync] Recordings: synced={synced}, failed={failed}")
 
 
 # ============ Global Instance ============
