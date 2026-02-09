@@ -185,7 +185,11 @@ class CameraRecorder:
     async def _upload_to_minio(self) -> Optional[str]:
         """Upload recording file to MinIO."""
         if not self.current_file or not os.path.exists(self.current_file):
+            print(f"[AutoRecorder] Upload skipped - file not found: {self.current_file}")
             return None
+
+        file_size = os.path.getsize(self.current_file)
+        print(f"[AutoRecorder] Preparing to upload: {self.current_file} ({file_size} bytes)")
 
         storage = get_minio_storage()
         if not storage.is_initialized:
@@ -198,6 +202,8 @@ class CameraRecorder:
             filename = os.path.basename(self.current_file)
             object_name = f"{date_path}/{filename}"
 
+            print(f"[AutoRecorder] Uploading to bucket: {settings.minio_bucket_recordings}, path: {object_name}")
+
             # Upload file
             with open(self.current_file, "rb") as f:
                 result = storage.upload_file(
@@ -205,17 +211,20 @@ class CameraRecorder:
                     object_name,
                     f,
                     "video/mp4",
-                    os.path.getsize(self.current_file)
+                    file_size
                 )
 
             if result:
-                print(f"[AutoRecorder] Uploaded to MinIO: {object_name}")
+                print(f"[AutoRecorder] Successfully uploaded to MinIO: {object_name}")
                 return object_name
-
-            return None
+            else:
+                print(f"[AutoRecorder] Upload returned None/False for: {object_name}")
+                return None
 
         except Exception as e:
             print(f"[AutoRecorder] Failed to upload to MinIO: {e}")
+            import traceback
+            traceback.print_exc()
             return None
 
     async def _save_to_database(self, minio_path: str, file_size: int):
@@ -302,13 +311,18 @@ class AutoRecorderService:
     async def _monitor_loop(self):
         """Main monitoring loop - checks camera health and manages recordings."""
         # Wait for other services to initialize
+        print("[AutoRecorder] Waiting 30 seconds for services to initialize...")
         await asyncio.sleep(30)
+        print("[AutoRecorder] Starting monitor loop...")
 
         while self.running:
             try:
                 await self._update_recorders()
+                print(f"[AutoRecorder] Active recorders: {len(self.recorders)}")
             except Exception as e:
                 print(f"[AutoRecorder] Monitor loop error: {e}")
+                import traceback
+                traceback.print_exc()
 
             await asyncio.sleep(HEALTH_CHECK_INTERVAL)
 
@@ -319,9 +333,16 @@ class AutoRecorderService:
             # Get all active AI Boxes
             aiboxes = db.query(AIBox).filter(AIBox.is_active == True).all()
 
+            if not aiboxes:
+                print("[AutoRecorder] No active AI Boxes found in database")
+                return
+
+            print(f"[AutoRecorder] Checking {len(aiboxes)} AI Box(es) for healthy cameras...")
+
             healthy_cameras: Set[str] = set()
 
             for aibox in aiboxes:
+                print(f"[AutoRecorder] Checking AI Box: {aibox.name} ({aibox.api_url})")
                 # Fetch camera status from BM-APP
                 cameras = await self._get_healthy_cameras(aibox)
 
@@ -406,16 +427,27 @@ class AutoRecorderService:
         try:
             # Fetch tasks from BM-APP API
             api_url = aibox.api_url.rstrip("/")
+            full_url = f"{api_url}/app_task_status"
+            print(f"[AutoRecorder] Fetching task status from: {full_url}")
+
             async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(f"{api_url}/app_task_status")
+                response = await client.get(full_url)
+                print(f"[AutoRecorder] Response status: {response.status_code}")
+
                 if response.status_code == 200:
                     data = response.json()
                     tasks = data.get("TaskList", [])
+                    print(f"[AutoRecorder] Found {len(tasks)} tasks from {aibox.name}")
 
                     for task in tasks:
                         # Check AlgTaskStatus.type - 4=Healthy means stream is active
                         alg_task_status = task.get("AlgTaskStatus", {})
                         status_type = alg_task_status.get("type", 0) if isinstance(alg_task_status, dict) else 0
+                        task_name = task.get("AlgTaskSession", "unknown")
+                        media = task.get("Media", {}) or {}
+                        media_name = media.get("MediaName", "unknown")
+
+                        print(f"[AutoRecorder] Task: {task_name}, Media: {media_name}, Status: {status_type}")
 
                         # Only record cameras with status 4 (Healthy)
                         if status_type == 4:

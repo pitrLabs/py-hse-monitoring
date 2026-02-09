@@ -8,10 +8,11 @@ from sqlalchemy.orm import Session
 
 from app import schemas
 from app.auth import get_current_user
-from app.models import User, Alarm
+from app.models import User, Alarm, AIBox
 from app.config import settings
 from app.database import get_db
 from app.services.minio_storage import get_minio_storage
+from app.services.auto_recorder import _service as auto_recorder_service
 
 router = APIRouter(prefix="/storage", tags=["Storage"])
 
@@ -107,4 +108,82 @@ def storage_diagnostic(
         "alarms_with_minio_labeled": alarms_with_minio_labeled,
         "alarms_pending_sync": alarms_pending_sync,
         "sample_pending_alarm": sample_info
+    }
+
+
+@router.get("/auto-recorder/status")
+async def auto_recorder_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Check auto-recorder service status and debug info."""
+    import httpx
+
+    # Get AI Boxes from database
+    aiboxes = db.query(AIBox).filter(AIBox.is_active == True).all()
+    aibox_info = []
+
+    for aibox in aiboxes:
+        box_data = {
+            "id": str(aibox.id),
+            "name": aibox.name,
+            "api_url": aibox.api_url,
+            "is_active": aibox.is_active,
+            "cameras": []
+        }
+
+        # Try to fetch task status from BM-APP
+        try:
+            api_url = aibox.api_url.rstrip("/")
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(f"{api_url}/app_task_status")
+                if response.status_code == 200:
+                    data = response.json()
+                    tasks = data.get("TaskList", [])
+
+                    for task in tasks:
+                        alg_task_status = task.get("AlgTaskStatus", {})
+                        status_type = alg_task_status.get("type", 0) if isinstance(alg_task_status, dict) else 0
+                        media = task.get("Media", {}) or {}
+
+                        box_data["cameras"].append({
+                            "task_session": task.get("AlgTaskSession", ""),
+                            "media_name": media.get("MediaName", ""),
+                            "media_url": media.get("MediaUrl", ""),
+                            "status_type": status_type,
+                            "status_name": {0: "Stopped", 1: "Connecting", 4: "Healthy"}.get(status_type, f"Unknown({status_type})"),
+                            "is_recordable": status_type == 4
+                        })
+                else:
+                    box_data["error"] = f"API returned status {response.status_code}"
+        except Exception as e:
+            box_data["error"] = str(e)
+
+        aibox_info.append(box_data)
+
+    # Get auto-recorder service status
+    service_status = {
+        "running": False,
+        "active_recorders": 0,
+        "recorder_details": []
+    }
+
+    if auto_recorder_service:
+        service_status["running"] = auto_recorder_service.running
+        service_status["active_recorders"] = len(auto_recorder_service.recorders)
+
+        for camera_id, recorder in auto_recorder_service.recorders.items():
+            service_status["recorder_details"].append({
+                "camera_id": camera_id,
+                "camera_name": recorder.camera_name,
+                "rtsp_url": recorder.rtsp_url,
+                "is_recording": recorder.is_recording,
+                "current_file": recorder.current_file
+            })
+
+    return {
+        "minio_enabled": settings.minio_enabled,
+        "minio_initialized": get_minio_storage().is_initialized,
+        "aiboxes": aibox_info,
+        "auto_recorder": service_status
     }
