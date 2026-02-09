@@ -322,7 +322,7 @@ async def test_record(
         cmd = [
             "ffmpeg",
             "-rtsp_transport", "tcp",
-            "-stimeout", "30000000",  # 30 second socket timeout (microseconds)
+            "-rw_timeout", "30000000",  # 30 second read/write timeout (microseconds)
             "-analyzeduration", "10000000",  # 10 seconds
             "-probesize", "10000000",  # 10MB
             "-i", rtsp_url,
@@ -439,6 +439,60 @@ async def raw_bmapp_response(
         result["traceback"] = traceback.format_exc()
 
     return result
+
+
+@router.get("/debug/sample-alarm")
+async def sample_alarm_raw_data(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get sample alarm raw_data to debug image URL patterns.
+    Shows what BM-APP sends for images (raw vs labeled).
+    """
+    import json
+
+    # Get recent alarm with raw_data
+    alarm = db.query(Alarm).filter(
+        Alarm.raw_data.isnot(None),
+        Alarm.image_url.isnot(None)
+    ).order_by(Alarm.created_at.desc()).first()
+
+    if not alarm:
+        return {"error": "No alarm with raw_data found"}
+
+    # Parse raw_data
+    raw_data = {}
+    if alarm.raw_data:
+        try:
+            raw_data = json.loads(alarm.raw_data) if isinstance(alarm.raw_data, str) else alarm.raw_data
+        except:
+            raw_data = {"parse_error": str(alarm.raw_data)[:500]}
+
+    # Extract image-related fields
+    image_fields = {
+        "image_url": alarm.image_url,
+        "minio_image_path": alarm.minio_image_path,
+        "minio_labeled_image_path": alarm.minio_labeled_image_path,
+        "from_raw_data": {
+            "ImageData_length": len(raw_data.get("ImageData", "")) if raw_data.get("ImageData") else 0,
+            "ImageDataLabeled_length": len(raw_data.get("ImageDataLabeled", "")) if raw_data.get("ImageDataLabeled") else 0,
+            "LocalRawPath": raw_data.get("LocalRawPath"),
+            "LocalLabeledPath": raw_data.get("LocalLabeledPath"),
+            "imageUrl": raw_data.get("imageUrl"),
+            "picUrl": raw_data.get("picUrl"),
+        }
+    }
+
+    return {
+        "alarm_id": str(alarm.id),
+        "alarm_type": alarm.alarm_type,
+        "camera_name": alarm.camera_name,
+        "created_at": alarm.created_at.isoformat() if alarm.created_at else None,
+        "image_fields": image_fields,
+        "raw_data_keys": list(raw_data.keys()) if isinstance(raw_data, dict) else None,
+        "raw_data_sample": raw_data  # Full raw data for inspection
+    }
 
 
 @router.get("/auto-recorder/status")

@@ -84,13 +84,13 @@ class CameraRecorder:
             # -t: duration in seconds
             # -c copy: copy codec without re-encoding (faster)
             # -y: overwrite output file
-            # -stimeout: socket timeout in microseconds (30 seconds for high latency connections)
+            # -rw_timeout: read/write timeout in microseconds (universal option)
             # -analyzeduration: max duration for analyzing input (increased for slow connections)
             # -probesize: max bytes to probe input (increased for reliability)
             cmd = [
                 "ffmpeg",
                 "-rtsp_transport", "tcp",  # Use TCP for more reliable streaming
-                "-stimeout", "30000000",  # 30 second socket timeout (microseconds)
+                "-rw_timeout", "30000000",  # 30 second read/write timeout (microseconds)
                 "-analyzeduration", "10000000",  # 10 seconds
                 "-probesize", "10000000",  # 10MB
                 "-i", self.rtsp_url,

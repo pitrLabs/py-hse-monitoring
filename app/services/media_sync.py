@@ -108,7 +108,7 @@ class MediaSyncService:
 
     async def _sync_alarm_images(self, db, storage):
         """Sync alarm images from BM-APP to MinIO."""
-        # Find alarms with image_url but no minio_image_path
+        # Find alarms with image_url but no minio_image_path (and not marked as unavailable)
         alarms = db.query(Alarm).filter(
             Alarm.image_url.isnot(None),
             Alarm.image_url != "",
@@ -120,60 +120,105 @@ class MediaSyncService:
 
         print(f"[MediaSync] Syncing {len(alarms)} alarm images...")
         synced = 0
+        skipped = 0
         failed = 0
 
         for alarm in alarms:
             try:
-                # Build full URL if relative
-                image_url = alarm.image_url
-                if not image_url.startswith("http"):
-                    # Get AI Box URL from database if aibox_id is available
-                    bmapp_base = None
-                    if alarm.aibox_id:
-                        aibox = db.query(AIBox).filter(AIBox.id == alarm.aibox_id).first()
-                        if aibox and aibox.api_url:
-                            bmapp_base = aibox.api_url.rsplit("/api", 1)[0]
-                    if not bmapp_base:
-                        # Fallback to config (deprecated)
-                        bmapp_base = settings.bmapp_api_url.replace("/api", "")
+                # Get base URL for this alarm's AI Box
+                bmapp_base = None
+                if alarm.aibox_id:
+                    aibox = db.query(AIBox).filter(AIBox.id == alarm.aibox_id).first()
+                    if aibox and aibox.api_url:
+                        bmapp_base = aibox.api_url.rsplit("/api", 1)[0]
+                if not bmapp_base:
+                    bmapp_base = settings.bmapp_api_url.replace("/api", "")
 
-                    if image_url.startswith("/"):
-                        image_url = f"{bmapp_base}{image_url}"
+                # Try to get labeled image URL first (from raw_data if available)
+                labeled_url = None
+                raw_url = alarm.image_url
+
+                if alarm.raw_data:
+                    try:
+                        import json
+                        raw_data = json.loads(alarm.raw_data) if isinstance(alarm.raw_data, str) else alarm.raw_data
+                        # BM-APP uses ImageDataLabeled for labeled images
+                        labeled_path = raw_data.get("ImageDataLabeled") or raw_data.get("LocalLabeledPath")
+                        if labeled_path:
+                            if labeled_path.startswith("http"):
+                                labeled_url = labeled_path
+                            elif labeled_path.startswith("/"):
+                                labeled_url = f"{bmapp_base}{labeled_path}"
+                            else:
+                                labeled_url = f"{bmapp_base}/{labeled_path}"
+                    except:
+                        pass
+
+                # Build full raw URL
+                if not raw_url.startswith("http"):
+                    if raw_url.startswith("/"):
+                        raw_url = f"{bmapp_base}{raw_url}"
                     else:
-                        image_url = f"{bmapp_base}/{image_url}"
+                        raw_url = f"{bmapp_base}/{raw_url}"
 
-                print(f"[MediaSync] Downloading: {image_url}")
+                # Try labeled image first, then raw image
+                urls_to_try = []
+                if labeled_url:
+                    urls_to_try.append(("labeled", labeled_url))
+                urls_to_try.append(("raw", raw_url))
 
-                # Generate object name
-                extension = _get_extension_from_url(image_url)
-                object_name = storage.generate_object_name("alarm", extension)
+                success = False
+                for img_type, image_url in urls_to_try:
+                    print(f"[MediaSync] Trying {img_type}: {image_url}")
 
-                # Download and upload
-                result = await storage.upload_from_url(
-                    settings.minio_bucket_alarm_images,
-                    object_name,
-                    image_url,
-                    _get_content_type(extension)
-                )
+                    extension = _get_extension_from_url(image_url)
+                    object_name = storage.generate_object_name(f"alarm_{img_type}", extension)
 
-                if result:
-                    alarm.minio_image_path = object_name
+                    result, status = await storage.upload_from_url(
+                        settings.minio_bucket_alarm_images,
+                        object_name,
+                        image_url,
+                        _get_content_type(extension)
+                    )
+
+                    if status == "success":
+                        # Use labeled path field if we got labeled image
+                        if img_type == "labeled":
+                            alarm.minio_labeled_image_path = result
+                        else:
+                            alarm.minio_image_path = result
+                        alarm.minio_synced_at = datetime.utcnow()
+                        db.commit()
+                        synced += 1
+                        success = True
+                        break
+                    elif status == "not_found":
+                        # Try next URL or mark as unavailable
+                        continue
+                    else:
+                        # Other error - will retry next cycle
+                        failed += 1
+                        success = True  # Don't try more URLs on error
+                        break
+
+                if not success:
+                    # All URLs returned 404 - mark as unavailable so we don't retry
+                    alarm.minio_image_path = "UNAVAILABLE"
                     alarm.minio_synced_at = datetime.utcnow()
                     db.commit()
-                    synced += 1
-                else:
-                    failed += 1
+                    skipped += 1
+                    print(f"[MediaSync] Alarm {alarm.id}: all image URLs unavailable (404)")
 
             except Exception as e:
                 db.rollback()
                 failed += 1
                 print(f"[MediaSync] Failed to sync alarm image {alarm.id}: {e}")
 
-        print(f"[MediaSync] Alarm images: synced={synced}, failed={failed}")
+        print(f"[MediaSync] Alarm images: synced={synced}, skipped={skipped}, failed={failed}")
 
     async def _sync_alarm_videos(self, db, storage):
         """Sync alarm videos from BM-APP to MinIO."""
-        # Find alarms with video_url but no minio_video_path
+        # Find alarms with video_url but no minio_video_path (and not marked unavailable)
         alarms = db.query(Alarm).filter(
             Alarm.video_url.isnot(None),
             Alarm.video_url != "",
@@ -185,6 +230,7 @@ class MediaSyncService:
 
         print(f"[MediaSync] Syncing {len(alarms)} alarm videos...")
         synced = 0
+        skipped = 0
         failed = 0
 
         for alarm in alarms:
@@ -199,7 +245,6 @@ class MediaSyncService:
                         if aibox and aibox.api_url:
                             bmapp_base = aibox.api_url.rsplit("/api", 1)[0]
                     if not bmapp_base:
-                        # Fallback to config (deprecated)
                         bmapp_base = settings.bmapp_api_url.replace("/api", "")
 
                     if video_url.startswith("/"):
@@ -209,23 +254,28 @@ class MediaSyncService:
 
                 print(f"[MediaSync] Downloading video: {video_url}")
 
-                # Generate object name
                 extension = _get_extension_from_url(video_url)
                 object_name = storage.generate_object_name("alarm_video", extension)
 
-                # Download and upload
-                result = await storage.upload_from_url(
-                    settings.minio_bucket_alarm_images,  # Store in same bucket as images
+                result, status = await storage.upload_from_url(
+                    settings.minio_bucket_alarm_images,
                     object_name,
                     video_url,
                     _get_content_type(extension)
                 )
 
-                if result:
-                    alarm.minio_video_path = object_name
+                if status == "success":
+                    alarm.minio_video_path = result
                     alarm.minio_synced_at = datetime.utcnow()
                     db.commit()
                     synced += 1
+                elif status == "not_found":
+                    # Mark as unavailable so we don't retry
+                    alarm.minio_video_path = "UNAVAILABLE"
+                    alarm.minio_synced_at = datetime.utcnow()
+                    db.commit()
+                    skipped += 1
+                    print(f"[MediaSync] Alarm {alarm.id}: video unavailable (404)")
                 else:
                     failed += 1
 
@@ -234,11 +284,11 @@ class MediaSyncService:
                 failed += 1
                 print(f"[MediaSync] Failed to sync alarm video {alarm.id}: {e}")
 
-        print(f"[MediaSync] Alarm videos: synced={synced}, failed={failed}")
+        print(f"[MediaSync] Alarm videos: synced={synced}, skipped={skipped}, failed={failed}")
 
     async def _sync_recordings(self, db, storage):
         """Sync recordings from BM-APP to MinIO."""
-        # Find recordings with file_url but no minio_file_path
+        # Find recordings with file_url but no minio_file_path (and not unavailable)
         recordings = db.query(Recording).filter(
             Recording.file_url.isnot(None),
             Recording.file_url != "",
@@ -250,14 +300,13 @@ class MediaSyncService:
 
         print(f"[MediaSync] Syncing {len(recordings)} recordings...")
         synced = 0
+        skipped = 0
         failed = 0
 
         for recording in recordings:
             try:
-                # Build full URL if relative
                 file_url = recording.file_url
                 if not file_url.startswith("http"):
-                    # Note: recordings don't have aibox_id, use config fallback
                     bmapp_base = settings.bmapp_api_url.replace("/api", "")
                     if file_url.startswith("/"):
                         file_url = f"{bmapp_base}{file_url}"
@@ -266,23 +315,27 @@ class MediaSyncService:
 
                 print(f"[MediaSync] Downloading recording: {file_url}")
 
-                # Generate object name
                 extension = _get_extension_from_url(file_url)
                 object_name = storage.generate_object_name("recording", extension)
 
-                # Download and upload
-                result = await storage.upload_from_url(
+                result, status = await storage.upload_from_url(
                     settings.minio_bucket_recordings,
                     object_name,
                     file_url,
                     _get_content_type(extension)
                 )
 
-                if result:
-                    recording.minio_file_path = object_name
+                if status == "success":
+                    recording.minio_file_path = result
                     recording.minio_synced_at = datetime.utcnow()
                     db.commit()
                     synced += 1
+                elif status == "not_found":
+                    recording.minio_file_path = "UNAVAILABLE"
+                    recording.minio_synced_at = datetime.utcnow()
+                    db.commit()
+                    skipped += 1
+                    print(f"[MediaSync] Recording {recording.id}: file unavailable (404)")
                 else:
                     failed += 1
 
@@ -291,7 +344,7 @@ class MediaSyncService:
                 failed += 1
                 print(f"[MediaSync] Failed to sync recording {recording.id}: {e}")
 
-        print(f"[MediaSync] Recordings: synced={synced}, failed={failed}")
+        print(f"[MediaSync] Recordings: synced={synced}, skipped={skipped}, failed={failed}")
 
 
 # ============ Global Instance ============

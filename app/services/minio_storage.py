@@ -137,7 +137,7 @@ class MinioStorageService:
         object_name: str,
         source_url: str,
         content_type: Optional[str] = None
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], str]:
         """
         Download file from URL and upload to MinIO.
         Used for syncing media from BM-APP.
@@ -149,15 +149,24 @@ class MinioStorageService:
             content_type: MIME type (auto-detected if None)
 
         Returns:
-            Object name on success, None on failure
+            Tuple of (object_name or None, status)
+            - ("path/to/file", "success") - upload succeeded
+            - (None, "not_found") - file doesn't exist on source (404)
+            - (None, "error") - other error occurred
         """
         if not self.is_initialized:
             print("[MinIO] Not initialized")
-            return None
+            return None, "error"
 
         try:
             async with httpx.AsyncClient(timeout=60.0) as client:
                 response = await client.get(source_url)
+
+                # Handle 404 specifically - file doesn't exist
+                if response.status_code == 404:
+                    print(f"[MinIO] File not found (404): {source_url}")
+                    return None, "not_found"
+
                 response.raise_for_status()
 
                 # Auto-detect content type if not provided
@@ -175,14 +184,20 @@ class MinioStorageService:
                 )
 
                 print(f"[MinIO] Uploaded from URL: {bucket}/{object_name}")
-                return object_name
+                return object_name, "success"
 
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 404:
+                print(f"[MinIO] File not found (404): {source_url}")
+                return None, "not_found"
+            print(f"[MinIO] HTTP error downloading from {source_url}: {e}")
+            return None, "error"
         except httpx.HTTPError as e:
             print(f"[MinIO] HTTP error downloading from {source_url}: {e}")
-            return None
+            return None, "error"
         except S3Error as e:
             print(f"[MinIO] Upload error: {e}")
-            return None
+            return None, "error"
 
     def get_presigned_url(
         self,
