@@ -225,6 +225,15 @@ class BmAppAlarmListener:
         print(f"[BmApp] Alarm parsed - imageUrl: {image_url[:100] if image_url else 'NONE'}")
         print(f"[BmApp] ImageData: {len(image_data_base64)} chars, ImageDataLabeled: {len(labeled_image_data_base64)} chars")
 
+        # ===== MEDIA URL (RTSP) =====
+        media_url = (
+            media.get("MediaUrl") or
+            media.get("mediaUrl") or
+            data.get("MediaUrl") or
+            data.get("mediaUrl") or
+            ""
+        )
+
         # ===== VIDEO URL =====
         video_url = (
             data.get("VideoFile") or
@@ -273,6 +282,7 @@ class BmAppAlarmListener:
             "confidence": confidence,
             "image_url": image_url,
             "video_url": video_url,
+            "media_url": media_url,  # RTSP URL for video source
             "description": description,
             "alarm_time": alarm_time,
             "raw_data": json.dumps(data),

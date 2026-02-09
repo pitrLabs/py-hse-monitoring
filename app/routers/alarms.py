@@ -32,6 +32,7 @@ def _add_presigned_urls(alarm: Alarm) -> dict:
         "confidence": alarm.confidence,
         "image_url": alarm.image_url,
         "video_url": alarm.video_url,
+        "media_url": alarm.media_url,  # RTSP URL for video source
         "description": alarm.description,
         "status": alarm.status,
         "alarm_time": alarm.alarm_time,
@@ -256,6 +257,9 @@ async def export_excel_images(
         query = query.filter(and_(*filters))
 
     alarms = query.order_by(desc(Alarm.alarm_time)).limit(100).all()
+
+    # Get MinIO storage for presigned URLs
+    storage = get_minio_storage()
 
     wb = openpyxl.Workbook()
     ws = wb.active
@@ -547,6 +551,7 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
         confidence=float(alarm_data.get("confidence", 0) or 0),
         image_url=alarm_data.get("image_url"),
         video_url=alarm_data.get("video_url"),
+        media_url=alarm_data.get("media_url"),  # RTSP URL
         description=alarm_data.get("description"),
         raw_data=alarm_data.get("raw_data"),
         alarm_time=alarm_time,
@@ -718,6 +723,23 @@ async def receive_bmapp_alarm(
         # Save to database
         alarm = await save_alarm_from_bmapp(parsed, db)
 
+        # Generate MinIO presigned URLs for real-time notification
+        storage = get_minio_storage()
+        minio_labeled_image_url = None
+        minio_image_url = None
+
+        if storage.is_initialized:
+            if alarm.minio_labeled_image_path:
+                minio_labeled_image_url = storage.get_presigned_url(
+                    settings.minio_bucket_alarm_images,
+                    alarm.minio_labeled_image_path
+                )
+            if alarm.minio_image_path:
+                minio_image_url = storage.get_presigned_url(
+                    settings.minio_bucket_alarm_images,
+                    alarm.minio_image_path
+                )
+
         # Broadcast to WebSocket clients for real-time updates
         await broadcast_alarm({
             "id": str(alarm.id),
@@ -730,9 +752,15 @@ async def receive_bmapp_alarm(
             "confidence": alarm.confidence,
             "image_url": alarm.image_url,
             "video_url": alarm.video_url,
+            "media_url": alarm.media_url,  # RTSP URL for video source
             "description": alarm.description,
             "alarm_time": alarm.alarm_time.isoformat() if alarm.alarm_time else None,
-            "status": alarm.status
+            "status": alarm.status,
+            # MinIO presigned URLs for images
+            "minio_image_url": minio_image_url,
+            "minio_labeled_image_url": minio_labeled_image_url,
+            "minio_image_path": alarm.minio_image_path,
+            "minio_labeled_image_path": alarm.minio_labeled_image_path,
         })
 
         print(f"[BM-APP HTTP] Alarm saved with ID: {alarm.id}")

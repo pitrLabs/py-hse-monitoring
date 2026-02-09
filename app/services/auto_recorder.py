@@ -57,6 +57,24 @@ class CameraRecorder:
             await self.stop_chunk()
 
         try:
+            # Check if FFmpeg is available
+            try:
+                result = subprocess.run(
+                    ["ffmpeg", "-version"],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=5
+                )
+                if result.returncode != 0:
+                    print("[AutoRecorder] FFmpeg not available or not working properly")
+                    return False
+            except FileNotFoundError:
+                print("[AutoRecorder] FFmpeg not installed! Please install FFmpeg to enable auto-recording.")
+                return False
+            except subprocess.TimeoutExpired:
+                print("[AutoRecorder] FFmpeg check timed out")
+                return False
+
             # Generate unique filename
             filename = self._generate_filename()
             self.current_file = os.path.join(tempfile.gettempdir(), filename)
@@ -78,6 +96,7 @@ class CameraRecorder:
             ]
 
             print(f"[AutoRecorder] Starting recording: {self.camera_name} -> {filename}")
+            print(f"[AutoRecorder] RTSP URL: {self.rtsp_url}")
 
             # Start FFmpeg process
             self.process = subprocess.Popen(
@@ -90,6 +109,8 @@ class CameraRecorder:
 
         except Exception as e:
             print(f"[AutoRecorder] Failed to start recording {self.camera_name}: {e}")
+            import traceback
+            traceback.print_exc()
             self.is_recording = False
             return False
 
@@ -99,33 +120,58 @@ class CameraRecorder:
             return None
 
         try:
+            # Read any FFmpeg stderr output for debugging
+            stderr_output = ""
+            if self.process.stderr:
+                try:
+                    stderr_output = self.process.stderr.read().decode('utf-8', errors='ignore')[-500:]
+                except:
+                    pass
+
             # Terminate FFmpeg process gracefully
             self.process.terminate()
             try:
                 self.process.wait(timeout=10)
             except subprocess.TimeoutExpired:
+                print(f"[AutoRecorder] FFmpeg didn't terminate gracefully, killing: {self.camera_name}")
                 self.process.kill()
 
+            exit_code = self.process.returncode
             self.is_recording = False
             self.process = None
+
+            # Log FFmpeg exit status
+            if exit_code != 0 and exit_code is not None:
+                print(f"[AutoRecorder] FFmpeg exited with code {exit_code} for {self.camera_name}")
+                if stderr_output:
+                    print(f"[AutoRecorder] FFmpeg stderr: {stderr_output}")
 
             # Check if file was created and has content
             if self.current_file and os.path.exists(self.current_file):
                 file_size = os.path.getsize(self.current_file)
+                print(f"[AutoRecorder] Recording file size: {file_size} bytes for {self.camera_name}")
+
                 if file_size > 0:
                     # Upload to MinIO
                     minio_path = await self._upload_to_minio()
                     if minio_path:
                         # Save recording entry to database
                         await self._save_to_database(minio_path, file_size)
+                        print(f"[AutoRecorder] Successfully saved recording: {minio_path}")
                     return minio_path
                 else:
                     print(f"[AutoRecorder] Empty recording file: {self.current_file}")
+                    if stderr_output:
+                        print(f"[AutoRecorder] FFmpeg stderr: {stderr_output}")
+            else:
+                print(f"[AutoRecorder] Recording file not created: {self.current_file}")
 
             return None
 
         except Exception as e:
             print(f"[AutoRecorder] Error stopping recording {self.camera_name}: {e}")
+            import traceback
+            traceback.print_exc()
             return None
         finally:
             # Cleanup temp file
@@ -347,6 +393,11 @@ class AutoRecorderService:
         """
         Get list of healthy cameras from BM-APP.
         Returns list of dicts with: id, name, rtsp_url
+
+        BM-APP AlgTaskStatus.type values:
+        - 4 = Healthy (stream is active and working) <- Only this is used for recording
+        - 1 = Connecting
+        - 0 = Stopped
         """
         import httpx
 
@@ -362,18 +413,28 @@ class AutoRecorderService:
                     tasks = data.get("TaskList", [])
 
                     for task in tasks:
-                        # Check if task is running/healthy
-                        status = task.get("TaskStatus", "")
-                        if status.lower() in ["running", "healthy", "online"]:
+                        # Check AlgTaskStatus.type - 4=Healthy means stream is active
+                        alg_task_status = task.get("AlgTaskStatus", {})
+                        status_type = alg_task_status.get("type", 0) if isinstance(alg_task_status, dict) else 0
+
+                        # Only record cameras with status 4 (Healthy)
+                        if status_type == 4:
                             media = task.get("Media", {}) or {}
                             rtsp_url = media.get("MediaUrl", "")
 
                             if rtsp_url:
-                                cameras.append({
+                                camera_info = {
                                     "id": task.get("AlgTaskSession", task.get("MediaName", "")),
                                     "name": media.get("MediaName", task.get("MediaName", "Unknown")),
                                     "rtsp_url": rtsp_url
-                                })
+                                }
+                                cameras.append(camera_info)
+                                print(f"[AutoRecorder] Found healthy camera: {camera_info['name']} (status={status_type})")
+
+                    if cameras:
+                        print(f"[AutoRecorder] Found {len(cameras)} healthy cameras from {aibox.name}")
+                    else:
+                        print(f"[AutoRecorder] No healthy cameras found from {aibox.name}")
 
         except Exception as e:
             print(f"[AutoRecorder] Failed to get cameras from {aibox.name}: {e}")

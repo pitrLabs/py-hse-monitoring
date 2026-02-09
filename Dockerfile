@@ -7,7 +7,8 @@ RUN apk update && apk add --no-cache \
     curl gcc g++ make cmake pkgconfig \
     openssl-dev cyrus-sasl-dev \
     bash \
-    musl-dev linux-headers
+    musl-dev linux-headers \
+    ffmpeg
 
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 

@@ -253,6 +253,7 @@ class AlarmBase(BaseModel):
     confidence: float = 0.0
     image_url: Optional[str] = None
     video_url: Optional[str] = None
+    media_url: Optional[str] = None  # RTSP URL for video source
     description: Optional[str] = None
 
 

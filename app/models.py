@@ -162,6 +162,7 @@ class Alarm(Base):
     confidence: Mapped[float] = mapped_column(default=0.0, nullable=False)
     image_url: Mapped[str | None] = mapped_column(String(500))
     video_url: Mapped[str | None] = mapped_column(String(500))
+    media_url: Mapped[str | None] = mapped_column(String(500))  # RTSP URL for video source
     description: Mapped[str | None] = mapped_column(String(1000))
     raw_data: Mapped[str | None] = mapped_column(String(5000))  # Original JSON from BM-APP
     status: Mapped[str] = mapped_column(String(20), default="new", nullable=False)  # new, acknowledged, resolved
