@@ -10,6 +10,7 @@ from app.services.camera_status import start_camera_status_poller, stop_camera_s
 from app.services.analytics_sync import start_analytics_sync, stop_analytics_sync
 from app.services.minio_storage import initialize_minio
 from app.services.media_sync import start_media_sync, stop_media_sync
+from app.services.auto_recorder import start_auto_recorder, stop_auto_recorder
 from app.services.mediamtx import add_stream_path
 from app.routers.alarms import save_alarm_from_bmapp
 from app.models import VideoSource
@@ -59,12 +60,15 @@ async def lifespan(app: FastAPI):
     # Initialize MinIO storage and start media sync
     initialize_minio()
     await start_media_sync()
+    # Start auto-recorder for AI camera streams (5-min chunks to MinIO)
+    await start_auto_recorder()
     yield
     # Shutdown
     stop_alarm_listener()
     stop_camera_status_poller()
     stop_analytics_sync()
     stop_media_sync()
+    stop_auto_recorder()
 
 
 async def delayed_mediamtx_sync():
