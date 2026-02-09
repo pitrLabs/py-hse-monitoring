@@ -565,6 +565,7 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     # Send Telegram notification (async, non-blocking)
     try:
         # Get image URL for Telegram (prefer labeled image with detection boxes)
+        storage = get_minio_storage()
         image_url_for_telegram = None
         if minio_labeled_image_path and storage.is_initialized:
             image_url_for_telegram = storage.get_presigned_url(
