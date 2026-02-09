@@ -84,9 +84,15 @@ class CameraRecorder:
             # -t: duration in seconds
             # -c copy: copy codec without re-encoding (faster)
             # -y: overwrite output file
+            # -stimeout: socket timeout in microseconds (30 seconds for high latency connections)
+            # -analyzeduration: max duration for analyzing input (increased for slow connections)
+            # -probesize: max bytes to probe input (increased for reliability)
             cmd = [
                 "ffmpeg",
                 "-rtsp_transport", "tcp",  # Use TCP for more reliable streaming
+                "-stimeout", "30000000",  # 30 second socket timeout (microseconds)
+                "-analyzeduration", "10000000",  # 10 seconds
+                "-probesize", "10000000",  # 10MB
                 "-i", self.rtsp_url,
                 "-t", str(CHUNK_DURATION_SECONDS),
                 "-c", "copy",
@@ -448,47 +454,75 @@ class AutoRecorderService:
                     print(f"[AutoRecorder] Found {len(raw_tasks)} tasks from {aibox.name}")
 
                     # Parse the JSON config from each task
-                    tasks = []
+                    # BM-APP response structure can vary - try multiple parsing strategies
+                    import json as json_lib
+
                     for raw_task in raw_tasks:
                         try:
-                            import json as json_lib
-                            task_json = raw_task.get("json", "{}")
-                            if isinstance(task_json, str):
-                                task_config = json_lib.loads(task_json)
+                            # Strategy 1: Parse "json" field if it's a string
+                            task_config = {}
+                            if "json" in raw_task:
+                                task_json = raw_task.get("json", "{}")
+                                if isinstance(task_json, str):
+                                    try:
+                                        task_config = json_lib.loads(task_json)
+                                    except:
+                                        task_config = {}
+                                elif isinstance(task_json, dict):
+                                    task_config = task_json
+
+                            # Strategy 2: Get values directly from raw_task (some fields are at root level)
+                            task_session = (
+                                task_config.get("AlgTaskSession") or
+                                raw_task.get("AlgTaskSession") or
+                                raw_task.get("session") or
+                                raw_task.get("name") or
+                                ""
+                            )
+
+                            media_name = (
+                                task_config.get("MediaName") or
+                                raw_task.get("MediaName") or
+                                raw_task.get("mediaName") or
+                                task_session or
+                                ""
+                            )
+
+                            # Status - check multiple locations
+                            alg_task_status = (
+                                raw_task.get("AlgTaskStatus") or
+                                task_config.get("AlgTaskStatus") or
+                                {}
+                            )
+                            if isinstance(alg_task_status, dict):
+                                status_type = alg_task_status.get("type", 0)
                             else:
-                                task_config = task_json
-                            # Merge with raw task info
-                            task_config["_raw"] = raw_task
-                            tasks.append(task_config)
-                        except Exception as parse_err:
-                            print(f"[AutoRecorder] Failed to parse task: {parse_err}")
+                                status_type = 0
+
+                            # Debug: Log raw task structure for first task
+                            if raw_tasks.index(raw_task) == 0:
+                                print(f"[AutoRecorder] Sample raw_task keys: {list(raw_task.keys())}")
+                                print(f"[AutoRecorder] Sample task_config keys: {list(task_config.keys()) if task_config else 'empty'}")
+
+                            print(f"[AutoRecorder] Task: {task_session}, Media: {media_name}, Status: {status_type}")
+
+                            # Only record cameras with status 4 (Healthy)
+                            if status_type == 4:
+                                # Try to get RTSP URL from media fetch
+                                rtsp_url = await self._get_media_url(aibox, media_name)
+
+                                if rtsp_url:
+                                    camera_info = {
+                                        "id": task_session or media_name,
+                                        "name": media_name,
+                                        "rtsp_url": rtsp_url
+                                    }
+                                    cameras.append(camera_info)
+                                    print(f"[AutoRecorder] Found healthy camera: {camera_info['name']}")
+
+                        except Exception as e:
+                            print(f"[AutoRecorder] Error parsing task: {e}")
                             continue
-
-                    for task in tasks:
-                        # Task config from parsed JSON
-                        task_session = task.get("AlgTaskSession", "")
-                        media_name = task.get("MediaName", task_session)
-                        raw_task = task.get("_raw", {})
-
-                        # Status might be in raw task data
-                        alg_task_status = raw_task.get("AlgTaskStatus", task.get("AlgTaskStatus", {}))
-                        status_type = alg_task_status.get("type", 0) if isinstance(alg_task_status, dict) else 0
-
-                        print(f"[AutoRecorder] Task: {task_session}, Media: {media_name}, Status: {status_type}")
-
-                        # Only record cameras with status 4 (Healthy)
-                        if status_type == 4:
-                            # Try to get RTSP URL from media fetch
-                            rtsp_url = await self._get_media_url(aibox, media_name)
-
-                            if rtsp_url:
-                                camera_info = {
-                                    "id": task_session or media_name,
-                                    "name": media_name,
-                                    "rtsp_url": rtsp_url
-                                }
-                                cameras.append(camera_info)
-                                print(f"[AutoRecorder] Found healthy camera: {camera_info['name']}")
 
                     if cameras:
                         print(f"[AutoRecorder] Found {len(cameras)} healthy cameras from {aibox.name}")

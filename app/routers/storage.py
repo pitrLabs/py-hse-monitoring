@@ -318,10 +318,13 @@ async def test_record(
         filename = f"test_record_{uuid4().hex[:8]}.mp4"
         filepath = os.path.join(tempfile.gettempdir(), filename)
 
-        # FFmpeg command
+        # FFmpeg command with extended timeouts for high latency connections
         cmd = [
             "ffmpeg",
             "-rtsp_transport", "tcp",
+            "-stimeout", "30000000",  # 30 second socket timeout (microseconds)
+            "-analyzeduration", "10000000",  # 10 seconds
+            "-probesize", "10000000",  # 10MB
             "-i", rtsp_url,
             "-t", str(duration_seconds),
             "-c", "copy",
@@ -329,14 +332,14 @@ async def test_record(
             filepath
         ]
 
-        result["ffmpeg_cmd"] = " ".join(cmd[:6]) + " ..."  # Truncated for security
+        result["ffmpeg_cmd"] = " ".join(cmd[:8]) + " ..."  # Truncated for security
 
-        # Run FFmpeg
+        # Run FFmpeg with extended timeout (socket timeout + record duration + buffer)
         process = subprocess.run(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
-            timeout=duration_seconds + 30
+            timeout=duration_seconds + 60  # Increased timeout for high latency
         )
 
         result["ffmpeg_returncode"] = process.returncode
@@ -375,6 +378,61 @@ async def test_record(
 
     except subprocess.TimeoutExpired:
         result["error"] = "FFmpeg timed out"
+    except Exception as e:
+        result["error"] = str(e)
+        import traceback
+        result["traceback"] = traceback.format_exc()
+
+    return result
+
+
+@router.get("/auto-recorder/raw-bmapp")
+async def raw_bmapp_response(
+    aibox_id: str = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get RAW response from BM-APP endpoints for debugging.
+    Shows exact structure returned by /alg_task_fetch and /alg_media_fetch.
+    """
+    import httpx
+
+    # Get AI Box
+    if aibox_id:
+        aibox = db.query(AIBox).filter(AIBox.id == aibox_id).first()
+        aiboxes = [aibox] if aibox else []
+    else:
+        aiboxes = db.query(AIBox).filter(AIBox.is_active == True).limit(1).all()
+
+    if not aiboxes:
+        return {"error": "No AI Box found"}
+
+    aibox = aiboxes[0]
+    api_url = aibox.api_url.rstrip("/")
+
+    result = {
+        "aibox": {"id": str(aibox.id), "name": aibox.name, "api_url": api_url},
+        "alg_task_fetch": None,
+        "alg_media_fetch": None
+    }
+
+    try:
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            # Fetch tasks - RAW response
+            task_resp = await client.post(f"{api_url}/alg_task_fetch", json={})
+            result["alg_task_fetch"] = {
+                "status_code": task_resp.status_code,
+                "raw": task_resp.json() if task_resp.status_code == 200 else task_resp.text
+            }
+
+            # Fetch media - RAW response
+            media_resp = await client.post(f"{api_url}/alg_media_fetch", json={})
+            result["alg_media_fetch"] = {
+                "status_code": media_resp.status_code,
+                "raw": media_resp.json() if media_resp.status_code == 200 else media_resp.text
+            }
+
     except Exception as e:
         result["error"] = str(e)
         import traceback

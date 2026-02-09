@@ -167,3 +167,10 @@ def _upgrade_schema():
                 ))
                 conn.commit()
                 print("[Migration] Done: aibox_name column added to alarms")
+            if 'media_url' not in columns:
+                print("[Migration] Adding media_url column to alarms...")
+                conn.execute(text(
+                    'ALTER TABLE alarms ADD COLUMN media_url VARCHAR(500)'
+                ))
+                conn.commit()
+                print("[Migration] Done: media_url column added to alarms")
