@@ -3,7 +3,7 @@ Media Sync Service
 Background service that syncs alarm images and recordings from BM-APP to MinIO.
 """
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional
 
 from app.config import settings
@@ -17,6 +17,8 @@ SYNC_INTERVAL = 300  # 5 minutes
 BATCH_ALARM_IMAGES = 50
 BATCH_ALARM_VIDEOS = 20
 BATCH_RECORDINGS = 10
+# Only sync media from the last N days (BM-APP deletes old images)
+SYNC_MAX_AGE_DAYS = 7
 
 
 def _get_extension_from_url(url: str) -> str:
@@ -99,6 +101,9 @@ class MediaSyncService:
         print("[MediaSync] Running sync cycle...")
         db = SessionLocal()
         try:
+            # First, mark old unsynced alarms as UNAVAILABLE (one-time cleanup)
+            await self._cleanup_old_alarms(db)
+
             await self._sync_alarm_images(db, storage)
             await self._sync_alarm_videos(db, storage)
             await self._sync_recordings(db, storage)
@@ -106,14 +111,66 @@ class MediaSyncService:
         finally:
             db.close()
 
+    async def _cleanup_old_alarms(self, db):
+        """Mark old unsynced alarms as UNAVAILABLE to prevent retry loops."""
+        cutoff_date = datetime.utcnow() - timedelta(days=SYNC_MAX_AGE_DAYS)
+
+        # Count old alarms that need cleanup
+        old_image_count = db.query(Alarm).filter(
+            Alarm.image_url.isnot(None),
+            Alarm.image_url != "",
+            Alarm.minio_image_path.is_(None),
+            Alarm.created_at < cutoff_date
+        ).count()
+
+        old_video_count = db.query(Alarm).filter(
+            Alarm.video_url.isnot(None),
+            Alarm.video_url != "",
+            Alarm.minio_video_path.is_(None),
+            Alarm.created_at < cutoff_date
+        ).count()
+
+        if old_image_count > 0 or old_video_count > 0:
+            print(f"[MediaSync] Marking {old_image_count} old images and {old_video_count} old videos as UNAVAILABLE...")
+
+            # Mark old unsynced images as UNAVAILABLE
+            db.query(Alarm).filter(
+                Alarm.image_url.isnot(None),
+                Alarm.image_url != "",
+                Alarm.minio_image_path.is_(None),
+                Alarm.created_at < cutoff_date
+            ).update({
+                Alarm.minio_image_path: "UNAVAILABLE",
+                Alarm.minio_synced_at: datetime.utcnow()
+            }, synchronize_session=False)
+
+            # Mark old unsynced videos as UNAVAILABLE
+            db.query(Alarm).filter(
+                Alarm.video_url.isnot(None),
+                Alarm.video_url != "",
+                Alarm.minio_video_path.is_(None),
+                Alarm.created_at < cutoff_date
+            ).update({
+                Alarm.minio_video_path: "UNAVAILABLE",
+                Alarm.minio_synced_at: datetime.utcnow()
+            }, synchronize_session=False)
+
+            db.commit()
+            print(f"[MediaSync] Cleanup complete")
+
     async def _sync_alarm_images(self, db, storage):
         """Sync alarm images from BM-APP to MinIO."""
+        # Only sync recent alarms (BM-APP deletes old images after a few days)
+        cutoff_date = datetime.utcnow() - timedelta(days=SYNC_MAX_AGE_DAYS)
+
         # Find alarms with image_url but no minio_image_path (and not marked as unavailable)
+        # Order by newest first so recent alarms get synced first
         alarms = db.query(Alarm).filter(
             Alarm.image_url.isnot(None),
             Alarm.image_url != "",
-            Alarm.minio_image_path.is_(None)
-        ).limit(BATCH_ALARM_IMAGES).all()
+            Alarm.minio_image_path.is_(None),
+            Alarm.created_at >= cutoff_date  # Only recent alarms
+        ).order_by(Alarm.created_at.desc()).limit(BATCH_ALARM_IMAGES).all()
 
         if not alarms:
             return
@@ -218,12 +275,16 @@ class MediaSyncService:
 
     async def _sync_alarm_videos(self, db, storage):
         """Sync alarm videos from BM-APP to MinIO."""
+        # Only sync recent alarms (BM-APP deletes old videos after a few days)
+        cutoff_date = datetime.utcnow() - timedelta(days=SYNC_MAX_AGE_DAYS)
+
         # Find alarms with video_url but no minio_video_path (and not marked unavailable)
         alarms = db.query(Alarm).filter(
             Alarm.video_url.isnot(None),
             Alarm.video_url != "",
-            Alarm.minio_video_path.is_(None)
-        ).limit(BATCH_ALARM_VIDEOS).all()
+            Alarm.minio_video_path.is_(None),
+            Alarm.created_at >= cutoff_date  # Only recent alarms
+        ).order_by(Alarm.created_at.desc()).limit(BATCH_ALARM_VIDEOS).all()
 
         if not alarms:
             return
@@ -288,12 +349,16 @@ class MediaSyncService:
 
     async def _sync_recordings(self, db, storage):
         """Sync recordings from BM-APP to MinIO."""
+        # Only sync recent recordings (BM-APP deletes old files after a few days)
+        cutoff_date = datetime.utcnow() - timedelta(days=SYNC_MAX_AGE_DAYS)
+
         # Find recordings with file_url but no minio_file_path (and not unavailable)
         recordings = db.query(Recording).filter(
             Recording.file_url.isnot(None),
             Recording.file_url != "",
-            Recording.minio_file_path.is_(None)
-        ).limit(BATCH_RECORDINGS).all()
+            Recording.minio_file_path.is_(None),
+            Recording.created_at >= cutoff_date  # Only recent recordings
+        ).order_by(Recording.created_at.desc()).limit(BATCH_RECORDINGS).all()
 
         if not recordings:
             return
