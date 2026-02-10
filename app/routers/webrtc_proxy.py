@@ -26,6 +26,11 @@ PRIVATE_TO_PUBLIC_IP = {
     # Add more mappings as needed
 }
 
+# SSH tunnel endpoint for WebRTC media
+# When set, all WebRTC media IPs will be replaced with this IP
+# This allows routing through SSH tunnel: Dashboard(58002) -> AI Box(58002)
+WEBRTC_TUNNEL_IP = "103.105.55.136"  # Dashboard server IP with SSH tunnel
+
 
 def extract_host_from_url(url: str) -> str:
     """Extract host (IP or domain) from URL."""
@@ -42,6 +47,8 @@ def rewrite_sdp_ips(sdp: str, public_ip: str) -> str:
     - a=candidate lines: a=candidate:... 172.16.200.190 58002 ...
     - a=rtcp lines: a=rtcp:58002 IN IP4 172.16.200.190
     - o= lines (origin): o=- 123 456 IN IP4 172.16.200.190
+    - Removes IPv6 link-local candidates (fe80::) that won't work externally
+    - Increases priority of IPv4 candidates
     """
     result = sdp
 
@@ -77,6 +84,55 @@ def rewrite_sdp_ips(sdp: str, public_ip: str) -> str:
             rf'\g<1>{target_ip}\g<2>',
             result,
             flags=re.IGNORECASE
+        )
+
+    # Remove IPv6 link-local candidates (fe80::) - they won't work externally
+    result = re.sub(
+        r'a=candidate:[^\r\n]*fe80::[^\r\n]*\r\n',
+        '',
+        result
+    )
+
+    # Rewrite candidates to Chrome-compatible format with generation field
+    # Give TCP higher priority than UDP since UDP seems blocked
+    # Priority formula: type_preference * 2^24 + local_preference * 2^8 + 256 - component_id
+    # Host TCP: 2130706431 (highest), Host UDP: 2113929471 (lower)
+
+    # Route all traffic through dashboard server (103.105.55.136)
+    # UDP: via socat UDP-to-TCP tunnel over SSH
+    # TCP: via SSH tunnel directly
+    tunnel_ip = WEBRTC_TUNNEL_IP if WEBRTC_TUNNEL_IP else None
+
+    # Rewrite UDP candidates to use dashboard IP (UDP tunneled via socat+SSH)
+    result = re.sub(
+        r'a=candidate:udpcandidate 1 udp \d+ \d+\.\d+\.\d+\.\d+ (\d+) typ host\r\n',
+        rf'a=candidate:udpcandidate 1 udp 2130706431 {tunnel_ip} \1 typ host generation 0\r\n',
+        result
+    )
+
+    # Fix TCP candidates - use tunnel IP for media routing via SSH tunnel
+    if tunnel_ip:
+        result = re.sub(
+            r'a=candidate:tcpcandidate 1 tcp \d+ \d+\.\d+\.\d+\.\d+ (\d+) typ host tcptype passive\r\n',
+            rf'a=candidate:tcpcandidate 1 tcp 2113929471 {tunnel_ip} \1 typ host tcptype passive generation 0\r\n',
+            result
+        )
+        # Update c= and a=rtcp lines to use tunnel IP
+        result = re.sub(
+            r'(c=IN IP4 )\d+\.\d+\.\d+\.\d+',
+            rf'\g<1>{tunnel_ip}',
+            result
+        )
+        result = re.sub(
+            r'(a=rtcp:\d+ IN IP4 )\d+\.\d+\.\d+\.\d+',
+            rf'\g<1>{tunnel_ip}',
+            result
+        )
+    else:
+        result = re.sub(
+            r'a=candidate:tcpcandidate 1 tcp \d+ (\d+\.\d+\.\d+\.\d+) (\d+) typ host tcptype passive\r\n',
+            r'a=candidate:tcpcandidate 1 tcp 2113929471 \1 \2 typ host tcptype passive generation 0\r\n',
+            result
         )
 
     return result

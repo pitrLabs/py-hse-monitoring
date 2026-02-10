@@ -5,7 +5,7 @@ services:
     image: be-hse-monitoring:1.0.0
     container_name: cont-be-hse-monitoring
     restart: always
-    command: uv run fastapi dev main.py --host 0.0.0.0 --port 8001
+    command: uv run fastapi run main.py --host 0.0.0.0 --port 8001
     env_file:
       - .env
     volumes:
@@ -17,6 +17,11 @@ services:
       - minio
     networks:
       - hse-network
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   mediamtx:
     image: bluenviron/mediamtx:latest
@@ -37,6 +42,11 @@ services:
     networks:
       - hse-network
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
   minio:
     image: minio/minio:latest
@@ -53,6 +63,11 @@ services:
     networks:
       - hse-network
     restart: unless-stopped
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
 
 networks:
   hse-network:
