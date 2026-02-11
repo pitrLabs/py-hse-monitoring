@@ -11,14 +11,15 @@ from app.models import CameraLocation
 
 
 class RTUAPIClient:
-    """Client for RTU UP2DJTY API"""
+    """Client for RTU UP2DJTY API (v2)"""
 
     def __init__(self):
         self.api_key = settings.rtu_api_key
         self.keypoint_url = settings.rtu_keypoint_url
+        self.tim_koper_url = settings.rtu_tim_koper_url
         self.gps_tim_har_url = settings.rtu_gps_tim_har_url
         self.headers = {
-            "X-API-KEY": self.api_key,
+            "x-api-key": self.api_key,
             "Accept": "application/json"
         }
 
@@ -52,8 +53,35 @@ class RTUAPIClient:
             print(f"[RTU API] Unexpected error: {e}")
             raise
 
+    async def fetch_tim_koper(self) -> List[Dict[str, Any]]:
+        """Fetch all koper CCTV data from RTU API v2 (includes status_perangkat)"""
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.get(
+                    self.tim_koper_url,
+                    headers=self.headers
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                # Handle different response formats
+                if isinstance(data, list):
+                    return data
+                elif isinstance(data, dict):
+                    if "data" in data:
+                        return data["data"] if isinstance(data["data"], list) else []
+                    elif "results" in data:
+                        return data["results"]
+                return []
+        except httpx.HTTPError as e:
+            print(f"[RTU API] Error fetching tim_koper: {e}")
+            raise
+        except Exception as e:
+            print(f"[RTU API] Unexpected error fetching tim_koper: {e}")
+            raise
+
     async def fetch_gps_tim_har(self) -> List[Dict[str, Any]]:
-        """Fetch GPS TIM HAR data from RTU API"""
+        """Fetch GPS TIM HAR data from RTU API v2 (koper with GPS coordinates)"""
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
                 response = await client.get(
@@ -265,6 +293,63 @@ def parse_google_maps_url(url: str) -> tuple:
     return 0.0, 0.0
 
 
+def parse_tim_koper(data: Dict[str, Any]) -> Dict[str, Any]:
+    """Parse TIM KOPER data from API v2 response
+
+    API Response format:
+    {
+        "id_alat": "KOPER_01",
+        "nama_tim": "DCC1-HAR KP 1",
+        "status_perangkat": "ON" or "OFF",
+        ...
+    }
+    """
+    lat = 0.0
+    lng = 0.0
+
+    # Try 'gps' field first
+    gps_field = data.get("gps")
+    if gps_field and isinstance(gps_field, str):
+        lat, lng = parse_coordinate_string(gps_field)
+
+    # Fallback: try lokasi_tim_har (Google Maps URL)
+    if lat == 0.0 and lng == 0.0:
+        lokasi_url = data.get("lokasi_tim_har")
+        if lokasi_url and isinstance(lokasi_url, str) and "google" in lokasi_url.lower():
+            lat, lng = parse_google_maps_url(lokasi_url)
+
+    # Get name
+    name = (
+        data.get("nama_tim") or
+        data.get("name") or
+        f"Koper {data.get('id_alat', data.get('id', 'Unknown'))}"
+    )
+
+    # Get external_id
+    external_id = str(
+        data.get("id_alat") or
+        data.get("id") or
+        ""
+    )
+
+    # Get status (ON/OFF)
+    status_str = str(data.get("status_perangkat", "")).upper()
+    is_online = status_str == "ON"
+
+    return {
+        "external_id": external_id,
+        "source": "tim_koper",
+        "name": str(name).strip(),
+        "latitude": lat,
+        "longitude": lng,
+        "location_type": data.get("jenis_har") or "Koper CCTV",
+        "description": data.get("kondisi_jaringan"),
+        "address": data.get("keypoint_name"),
+        "is_active": is_online,
+        "extra_data": {k: v for k, v in data.items() if v is not None and k not in ["id", "name", "latitude", "longitude", "gps"]}
+    }
+
+
 def parse_gps_tim_har(data: Dict[str, Any]) -> Dict[str, Any]:
     """Parse GPS TIM HAR data from API response
 
@@ -368,7 +453,7 @@ async def sync_locations_from_api(db: Session, source: str = "all") -> Tuple[int
 
     Args:
         db: Database session
-        source: Which API to sync from ('keypoint', 'gps_tim_har', or 'all')
+        source: Which API to sync from ('keypoint', 'tim_koper', 'gps_tim_har', or 'all')
 
     Returns:
         Tuple of (total_synced, created, updated, errors)
@@ -391,6 +476,16 @@ async def sync_locations_from_api(db: Session, source: str = "all") -> Tuple[int
                     errors.append(f"Keypoint '{parsed['name']}' has invalid coordinates")
         except Exception as e:
             errors.append(f"Failed to fetch keypoints: {str(e)}")
+
+    if source in ["tim_koper", "all"]:
+        try:
+            koper_data = await client.fetch_tim_koper()
+            for koper in koper_data:
+                parsed = parse_tim_koper(koper)
+                # Tim koper might not have GPS, we still save it for status tracking
+                locations_data.append(parsed)
+        except Exception as e:
+            errors.append(f"Failed to fetch tim_koper: {str(e)}")
 
     if source in ["gps_tim_har", "all"]:
         try:

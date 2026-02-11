@@ -38,10 +38,15 @@ class Settings(BaseSettings):
     analytics_sync_enabled: bool = Field(default=True, alias="ANALYTICS_SYNC_ENABLED")
     auto_recorder_enabled: bool = Field(default=True, alias="AUTO_RECORDER_ENABLED")
 
-    # External RTU API for camera locations
-    rtu_api_key: str = Field(default="plnup2djateng@!145", alias="RTU_API_KEY")
+    # External RTU API for camera locations (API v2)
+    rtu_api_key: str = Field(default="up2djateng@!145", alias="RTU_API_KEY")
     rtu_keypoint_url: str = Field(default="https://rtu.up2djty.com/api/keypoint_up2djty", alias="RTU_KEYPOINT_URL")
-    rtu_gps_tim_har_url: str = Field(default="https://rtu.up2djty.com/api/gps_tim_har", alias="RTU_GPS_TIM_HAR_URL")
+    rtu_tim_koper_url: str = Field(default="https://rtu.up2djty.com/api_v2/tim_koper", alias="RTU_TIM_KOPER_URL")
+    rtu_gps_tim_har_url: str = Field(default="https://rtu.up2djty.com/api_v2/gps_tim_har", alias="RTU_GPS_TIM_HAR_URL")
+
+    # GPS History Recording
+    gps_history_enabled: bool = Field(default=True, alias="GPS_HISTORY_ENABLED")
+    gps_history_interval: int = Field(default=60, alias="GPS_HISTORY_INTERVAL")  # seconds
 
     # MinIO Object Storage
     minio_enabled: bool = Field(default=False, alias="MINIO_ENABLED")

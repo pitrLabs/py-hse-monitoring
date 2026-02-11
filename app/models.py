@@ -202,6 +202,22 @@ class CameraLocation(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 
 
+class LocationHistory(Base):
+    """Historical GPS positions for tracking device movement over time"""
+    __tablename__ = "location_history"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    device_id: Mapped[str] = mapped_column(String(100), nullable=False, index=True)  # id_alat from RTU API
+    device_name: Mapped[str | None] = mapped_column(String(200))  # nama_tim
+    latitude: Mapped[float] = mapped_column(Float, nullable=False)
+    longitude: Mapped[float] = mapped_column(Float, nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)  # ON/OFF
+    is_online: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)  # Store extra fields from API
+    recorded_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, index=True)  # When this position was recorded
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+
 class CameraGroup(Base):
     """Camera groups/folders for organizing cameras - per user"""
     __tablename__ = "camera_groups"

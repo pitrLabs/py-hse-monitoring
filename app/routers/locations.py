@@ -1,6 +1,7 @@
 """
 Router for camera locations and groups management
 """
+from datetime import datetime, timedelta
 from typing import List, Optional
 from uuid import UUID
 
@@ -9,7 +10,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.models import CameraLocation, CameraGroup, User, VideoSource, user_camera_group_assignments
+from app.models import CameraLocation, CameraGroup, User, VideoSource, user_camera_group_assignments, LocationHistory
 from app.schemas import (
     CameraLocationCreate,
     CameraLocationUpdate,
@@ -117,7 +118,7 @@ async def cleanup_invalid_coordinates(
 
 @router.post("/sync", response_model=SyncResult)
 async def sync_locations(
-    source: str = Query("gps_tim_har", description="Source to sync: 'gps_tim_har' or 'all'"),
+    source: str = Query("gps_tim_har", description="Source to sync: 'tim_koper', 'gps_tim_har', or 'all'"),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -125,8 +126,8 @@ async def sync_locations(
     Sync camera locations from external RTU API.
     This will fetch latest data and update the database.
     """
-    if source not in ["gps_tim_har", "all"]:
-        raise HTTPException(status_code=400, detail="Invalid source. Use 'gps_tim_har' or 'all'")
+    if source not in ["tim_koper", "gps_tim_har", "all"]:
+        raise HTTPException(status_code=400, detail="Invalid source. Use 'tim_koper', 'gps_tim_har', or 'all'")
 
     total, created, updated, errors = await sync_locations_from_api(db, source)
 
@@ -138,9 +139,198 @@ async def sync_locations(
     )
 
 
+@router.get("/live/tim-koper")
+async def get_live_tim_koper(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get live tim koper data directly from RTU API (without saving to database).
+    Returns all koper CCTV with their current status (ON/OFF) and GPS if available.
+    Useful for real-time tracking on the map.
+    """
+    try:
+        data = await rtu_client.fetch_tim_koper()
+        result = []
+        for item in data:
+            # Parse GPS if available
+            lat, lng = 0.0, 0.0
+            gps_field = item.get("gps")
+            if gps_field and isinstance(gps_field, str) and gps_field.strip():
+                from app.services.rtu_api import parse_coordinate_string
+                lat, lng = parse_coordinate_string(gps_field)
+
+            result.append({
+                "id": item.get("id_alat") or item.get("id"),
+                "name": item.get("nama_tim") or f"Koper {item.get('id_alat', 'Unknown')}",
+                "latitude": lat,
+                "longitude": lng,
+                "status": item.get("status_perangkat", "OFF").upper(),
+                "is_online": item.get("status_perangkat", "").upper() == "ON",
+                "has_gps": lat != 0.0 and lng != 0.0,
+                "extra_data": item
+            })
+
+        return {
+            "count": len(result),
+            "online": sum(1 for r in result if r["is_online"]),
+            "with_gps": sum(1 for r in result if r["has_gps"]),
+            "data": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch tim_koper: {str(e)}")
+
+
+@router.get("/live/gps-tim-har")
+async def get_live_gps_tim_har(
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get live GPS TIM HAR data directly from RTU API (without saving to database).
+    Returns koper CCTV that are at scheduled Har locations (GPS field filled).
+    """
+    try:
+        data = await rtu_client.fetch_gps_tim_har()
+        result = []
+        for item in data:
+            # Parse GPS
+            lat, lng = 0.0, 0.0
+            gps_field = item.get("gps")
+            if gps_field and isinstance(gps_field, str) and gps_field.strip():
+                from app.services.rtu_api import parse_coordinate_string
+                lat, lng = parse_coordinate_string(gps_field)
+
+            # Skip entries without valid GPS
+            if lat == 0.0 and lng == 0.0:
+                continue
+
+            result.append({
+                "id": item.get("id_alat") or item.get("id"),
+                "name": item.get("nama_tim") or f"Koper {item.get('id_alat', 'Unknown')}",
+                "latitude": lat,
+                "longitude": lng,
+                "status": item.get("status_perangkat", "OFF").upper(),
+                "is_online": item.get("status_perangkat", "").upper() == "ON",
+                "keypoint_name": item.get("keypoint_name"),
+                "jenis_har": item.get("jenis_har"),
+                "extra_data": item
+            })
+
+        return {
+            "count": len(result),
+            "online": sum(1 for r in result if r["is_online"]),
+            "data": result
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to fetch gps_tim_har: {str(e)}")
+
+
+@router.get("/history/{device_id}")
+async def get_device_history(
+    device_id: str,
+    hours: int = Query(24, ge=1, le=168, description="Number of hours of history (1-168, default 24)"),
+    limit: int = Query(1000, ge=1, le=5000, description="Maximum number of records"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get historical GPS positions for a device.
+    Returns track data for displaying on map.
+
+    - device_id: The id_alat from RTU API
+    - hours: How many hours of history to retrieve (default 24, max 168 = 1 week)
+    - limit: Maximum number of data points (default 1000)
+    """
+    from_time = datetime.utcnow() - timedelta(hours=hours)
+
+    history = db.query(LocationHistory).filter(
+        LocationHistory.device_id == device_id,
+        LocationHistory.recorded_at >= from_time
+    ).order_by(LocationHistory.recorded_at.asc()).limit(limit).all()
+
+    # Convert to track format for map display
+    track = [
+        {
+            "lat": h.latitude,
+            "lng": h.longitude,
+            "status": h.status,
+            "is_online": h.is_online,
+            "recorded_at": h.recorded_at.isoformat()
+        }
+        for h in history
+    ]
+
+    # Get latest position
+    latest = track[-1] if track else None
+
+    return {
+        "device_id": device_id,
+        "from_time": from_time.isoformat(),
+        "to_time": datetime.utcnow().isoformat(),
+        "count": len(track),
+        "track": track,
+        "latest": latest
+    }
+
+
+@router.get("/history/{device_id}/summary")
+async def get_device_history_summary(
+    device_id: str,
+    hours: int = Query(24, ge=1, le=168, description="Number of hours of history"),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Get summary of device history (stats only, no track data).
+    Useful for quick overview without fetching all data points.
+    """
+    from_time = datetime.utcnow() - timedelta(hours=hours)
+
+    # Count records
+    total_records = db.query(func.count(LocationHistory.id)).filter(
+        LocationHistory.device_id == device_id,
+        LocationHistory.recorded_at >= from_time
+    ).scalar()
+
+    # Count online/offline
+    online_count = db.query(func.count(LocationHistory.id)).filter(
+        LocationHistory.device_id == device_id,
+        LocationHistory.recorded_at >= from_time,
+        LocationHistory.is_online == True
+    ).scalar()
+
+    # Get first and last position
+    first_record = db.query(LocationHistory).filter(
+        LocationHistory.device_id == device_id,
+        LocationHistory.recorded_at >= from_time
+    ).order_by(LocationHistory.recorded_at.asc()).first()
+
+    last_record = db.query(LocationHistory).filter(
+        LocationHistory.device_id == device_id,
+        LocationHistory.recorded_at >= from_time
+    ).order_by(LocationHistory.recorded_at.desc()).first()
+
+    return {
+        "device_id": device_id,
+        "hours": hours,
+        "total_records": total_records,
+        "online_records": online_count,
+        "offline_records": total_records - online_count if total_records else 0,
+        "first_position": {
+            "lat": first_record.latitude,
+            "lng": first_record.longitude,
+            "recorded_at": first_record.recorded_at.isoformat()
+        } if first_record else None,
+        "last_position": {
+            "lat": last_record.latitude,
+            "lng": last_record.longitude,
+            "recorded_at": last_record.recorded_at.isoformat()
+        } if last_record else None
+    }
+
+
 @router.get("/external/preview")
 async def preview_external_data(
-    source: str = Query("gps_tim_har", description="Source to preview: 'gps_tim_har'"),
+    source: str = Query("gps_tim_har", description="Source to preview: 'tim_koper', 'gps_tim_har', or 'keypoint'"),
     current_user: User = Depends(get_current_user)
 ):
     """
@@ -156,6 +346,17 @@ async def preview_external_data(
                 "sample": data[:10] if data else [],
                 "message": f"Found {len(data)} keypoints"
             }
+        elif source == "tim_koper":
+            data = await rtu_client.fetch_tim_koper()
+            online_count = sum(1 for d in data if str(d.get("status_perangkat", "")).upper() == "ON")
+            return {
+                "source": "tim_koper",
+                "count": len(data),
+                "online": online_count,
+                "offline": len(data) - online_count,
+                "sample": data[:10] if data else [],
+                "message": f"Found {len(data)} koper ({online_count} online, {len(data) - online_count} offline)"
+            }
         elif source == "gps_tim_har":
             data = await rtu_client.fetch_gps_tim_har()
             return {
@@ -165,7 +366,7 @@ async def preview_external_data(
                 "message": f"Found {len(data)} GPS records"
             }
         else:
-            raise HTTPException(status_code=400, detail="Invalid source. Use 'keypoint' or 'gps_tim_har'")
+            raise HTTPException(status_code=400, detail="Invalid source. Use 'keypoint', 'tim_koper', or 'gps_tim_har'")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch external data: {str(e)}")
 

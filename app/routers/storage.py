@@ -492,6 +492,33 @@ async def sample_alarm_raw_data(
     }
 
 
+@router.get("/auto-recorder")
+def get_auto_recorder_info(
+    current_user: User = Depends(get_current_user)
+):
+    """Get auto-recorder configuration and status."""
+    from app.services.auto_recorder import check_ffmpeg_available
+
+    service = get_auto_recorder_service()
+
+    return {
+        "config": {
+            "enabled": settings.auto_recorder_enabled,
+            "minio_enabled": settings.minio_enabled,
+            "ffmpeg_available": check_ffmpeg_available(),
+        },
+        "status": {
+            "running": service.is_running() if service else False,
+            "active_recorders": len(service.recorders) if service else 0,
+        },
+        "can_run": (
+            settings.auto_recorder_enabled and
+            settings.minio_enabled and
+            check_ffmpeg_available()
+        )
+    }
+
+
 @router.get("/auto-recorder/status")
 async def auto_recorder_status(
     db: Session = Depends(get_db),
@@ -597,6 +624,7 @@ async def auto_recorder_status(
             })
 
     return {
+        "auto_recorder_enabled": settings.auto_recorder_enabled,
         "minio_enabled": settings.minio_enabled,
         "minio_initialized": get_minio_storage().is_initialized,
         "aiboxes": aibox_info,

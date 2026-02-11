@@ -36,6 +36,7 @@ def list_recordings(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
     is_available: Optional[bool] = True,
+    minio_only: Optional[bool] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -71,6 +72,14 @@ def list_recordings(
     if is_available is not None:
         query = query.filter(Recording.is_available == is_available)
 
+    # Filter for recordings stored in MinIO only (can be played/downloaded)
+    if minio_only:
+        query = query.filter(
+            Recording.minio_file_path.isnot(None),
+            Recording.minio_file_path != "",
+            Recording.minio_file_path != "UNAVAILABLE"
+        )
+
     recordings = query.order_by(Recording.start_time.desc()).offset(skip).limit(limit).all()
     return recordings
 
@@ -80,6 +89,7 @@ def get_calendar_data(
     year: int = Query(..., ge=2020, le=2100),
     month: int = Query(..., ge=1, le=12),
     camera_id: Optional[str] = None,
+    minio_only: Optional[bool] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -103,6 +113,14 @@ def get_calendar_data(
     if camera_id:
         query = query.filter(Recording.camera_id == camera_id)
 
+    # Filter for recordings stored in MinIO only
+    if minio_only:
+        query = query.filter(
+            Recording.minio_file_path.isnot(None),
+            Recording.minio_file_path != "",
+            Recording.minio_file_path != "UNAVAILABLE"
+        )
+
     query = query.group_by(func.date(Recording.start_time))
     results = query.all()
 
@@ -122,6 +140,7 @@ def get_calendar_data(
 def get_recordings_by_date(
     date: str = Query(..., description="Date in YYYY-MM-DD format"),
     camera_id: Optional[str] = None,
+    minio_only: Optional[bool] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -145,6 +164,14 @@ def get_recordings_by_date(
 
     if camera_id:
         query = query.filter(Recording.camera_id == camera_id)
+
+    # Filter for recordings stored in MinIO only
+    if minio_only:
+        query = query.filter(
+            Recording.minio_file_path.isnot(None),
+            Recording.minio_file_path != "",
+            Recording.minio_file_path != "UNAVAILABLE"
+        )
 
     recordings = query.order_by(Recording.start_time.desc()).all()
     return recordings

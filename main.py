@@ -12,6 +12,7 @@ from app.services.minio_storage import initialize_minio
 from app.services.media_sync import start_media_sync, stop_media_sync
 from app.services.auto_recorder import start_auto_recorder, stop_auto_recorder
 from app.services.mediamtx import add_stream_path
+from app.services.gps_history import start_gps_history_recorder, stop_gps_history_recorder
 from app.routers.alarms import save_alarm_from_bmapp
 from app.models import VideoSource
 from app.config import settings
@@ -91,6 +92,13 @@ async def lifespan(app: FastAPI):
     else:
         print("[Startup] MinIO DISABLED (media sync and auto-recorder skipped)")
 
+    # Start GPS history recorder (for tracking device positions over time)
+    if settings.gps_history_enabled:
+        await start_gps_history_recorder()
+        print(f"[Startup] GPS history recorder started (interval={settings.gps_history_interval}s)")
+    else:
+        print("[Startup] GPS history recorder DISABLED")
+
     yield
 
     # Shutdown
@@ -104,6 +112,8 @@ async def lifespan(app: FastAPI):
         stop_media_sync()
         if settings.auto_recorder_enabled:
             stop_auto_recorder()
+    if settings.gps_history_enabled:
+        stop_gps_history_recorder()
 
 
 async def delayed_mediamtx_sync():

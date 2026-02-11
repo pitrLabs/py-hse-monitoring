@@ -234,105 +234,128 @@ async def export_excel_images(
     camera_id: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    limit: int = 50,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Export alarms to Excel with images - for Bukti Foto."""
     import openpyxl
     from openpyxl.styles import Font, Alignment, PatternFill, Border, Side
-    from openpyxl.drawing.image import Image as XLImage
     import httpx
 
-    query = db.query(Alarm)
-    filters = []
-    if alarm_type:
-        filters.append(Alarm.alarm_type == alarm_type)
-    if camera_id:
-        filters.append(Alarm.camera_id == camera_id)
-    if start_date:
-        filters.append(Alarm.alarm_time >= start_date)
-    if end_date:
-        filters.append(Alarm.alarm_time <= end_date)
-    if filters:
-        query = query.filter(and_(*filters))
+    # Limit max to 100 to prevent timeout
+    limit = min(limit, 100)
 
-    alarms = query.order_by(desc(Alarm.alarm_time)).limit(100).all()
+    try:
+        query = db.query(Alarm)
+        filters = []
+        if alarm_type:
+            filters.append(Alarm.alarm_type == alarm_type)
+        if camera_id:
+            filters.append(Alarm.camera_id == camera_id)
+        if start_date:
+            filters.append(Alarm.alarm_time >= start_date)
+        if end_date:
+            filters.append(Alarm.alarm_time <= end_date)
+        if filters:
+            query = query.filter(and_(*filters))
 
-    # Get MinIO storage for presigned URLs
-    storage = get_minio_storage()
+        alarms = query.order_by(desc(Alarm.alarm_time)).limit(limit).all()
+        print(f"[Excel Export] Starting export for {len(alarms)} alarms")
 
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Bukti Foto"
+        # Get MinIO storage for presigned URLs
+        storage = get_minio_storage()
 
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
-    header_alignment = Alignment(horizontal="center", vertical="center")
-    cell_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-    thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Bukti Foto"
 
-    headers = ["No", "Foto", "Waktu", "Kamera", "Lokasi", "Tipe Alarm", "Confidence"]
-    for col, header in enumerate(headers, 1):
-        cell = ws.cell(row=1, column=col, value=header)
-        cell.font = header_font
-        cell.fill = header_fill
-        cell.alignment = header_alignment
-        cell.border = thin_border
+        header_font = Font(bold=True, color="FFFFFF")
+        header_fill = PatternFill(start_color="1F4E79", end_color="1F4E79", fill_type="solid")
+        header_alignment = Alignment(horizontal="center", vertical="center")
+        cell_alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
+        thin_border = Border(left=Side(style='thin'), right=Side(style='thin'), top=Side(style='thin'), bottom=Side(style='thin'))
 
-    ws.row_dimensions[1].height = 25
-    img_width, img_height, row_height = 120, 80, 65
+        headers = ["No", "Foto", "Waktu", "Kamera", "Lokasi", "Tipe Alarm", "Confidence"]
+        for col, header in enumerate(headers, 1):
+            cell = ws.cell(row=1, column=col, value=header)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = thin_border
 
-    for idx, alarm in enumerate(alarms, 1):
-        row = idx + 1
-        ws.row_dimensions[row].height = row_height
-        ws.cell(row=row, column=1, value=idx).border = thin_border
-        ws.cell(row=row, column=1).alignment = cell_alignment
-        ws.cell(row=row, column=2, value="").border = thin_border
-        ws.cell(row=row, column=3, value=alarm.alarm_time.strftime('%d %b %Y\n%H:%M:%S') if alarm.alarm_time else '').border = thin_border
-        ws.cell(row=row, column=3).alignment = cell_alignment
-        ws.cell(row=row, column=4, value=alarm.camera_name or 'Unknown').border = thin_border
-        ws.cell(row=row, column=4).alignment = cell_alignment
-        ws.cell(row=row, column=5, value=alarm.location or '-').border = thin_border
-        ws.cell(row=row, column=5).alignment = cell_alignment
-        ws.cell(row=row, column=6, value=alarm.alarm_type or '').border = thin_border
-        ws.cell(row=row, column=6).alignment = cell_alignment
-        ws.cell(row=row, column=7, value=f"{round(alarm.confidence * 100)}%" if alarm.confidence else '-').border = thin_border
-        ws.cell(row=row, column=7).alignment = cell_alignment
+        ws.row_dimensions[1].height = 25
+        img_width, img_height, row_height = 120, 80, 65
 
-        image_url = None
-        if alarm.minio_labeled_image_path and storage.is_initialized:
-            image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_labeled_image_path)
-        elif alarm.minio_image_path and storage.is_initialized:
-            image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_image_path)
-        elif alarm.image_url:
-            image_url = alarm.image_url
+        # Try to import Pillow for image embedding
+        try:
+            from openpyxl.drawing.image import Image as XLImage
+            pillow_available = True
+        except ImportError:
+            pillow_available = False
+            print("[Excel Export] Pillow not available, images will show as links")
 
-        if image_url:
-            try:
-                async with httpx.AsyncClient(timeout=10.0) as client:
-                    img_response = await client.get(image_url)
-                    if img_response.status_code == 200:
-                        img = XLImage(BytesIO(img_response.content))
-                        img.width, img.height = img_width, img_height
-                        ws.add_image(img, f"B{row}")
-            except Exception as e:
-                print(f"[Excel] Failed to embed image: {e}")
-                ws.cell(row=row, column=2, value="(gagal load)").alignment = cell_alignment
+        # Use a single HTTP client for all requests
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            for idx, alarm in enumerate(alarms, 1):
+                row = idx + 1
+                ws.row_dimensions[row].height = row_height
+                ws.cell(row=row, column=1, value=idx).border = thin_border
+                ws.cell(row=row, column=1).alignment = cell_alignment
+                ws.cell(row=row, column=2, value="").border = thin_border
+                ws.cell(row=row, column=3, value=alarm.alarm_time.strftime('%d %b %Y\n%H:%M:%S') if alarm.alarm_time else '').border = thin_border
+                ws.cell(row=row, column=3).alignment = cell_alignment
+                ws.cell(row=row, column=4, value=alarm.camera_name or 'Unknown').border = thin_border
+                ws.cell(row=row, column=4).alignment = cell_alignment
+                ws.cell(row=row, column=5, value=alarm.location or '-').border = thin_border
+                ws.cell(row=row, column=5).alignment = cell_alignment
+                ws.cell(row=row, column=6, value=alarm.alarm_type or '').border = thin_border
+                ws.cell(row=row, column=6).alignment = cell_alignment
+                ws.cell(row=row, column=7, value=f"{round(alarm.confidence * 100)}%" if alarm.confidence else '-').border = thin_border
+                ws.cell(row=row, column=7).alignment = cell_alignment
 
-    column_widths = [5, 18, 15, 20, 25, 15, 12]
-    for col, width in enumerate(column_widths, 1):
-        ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
+                image_url = None
+                if alarm.minio_labeled_image_path and storage.is_initialized:
+                    image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_labeled_image_path)
+                elif alarm.minio_image_path and storage.is_initialized:
+                    image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_image_path)
+                elif alarm.image_url:
+                    image_url = alarm.image_url
 
-    excel_buffer = BytesIO()
-    wb.save(excel_buffer)
-    excel_buffer.seek(0)
+                if image_url and pillow_available:
+                    try:
+                        img_response = await client.get(image_url)
+                        if img_response.status_code == 200:
+                            img = XLImage(BytesIO(img_response.content))
+                            img.width, img.height = img_width, img_height
+                            ws.add_image(img, f"B{row}")
+                    except Exception as e:
+                        print(f"[Excel] Failed to embed image {idx}: {e}")
+                        ws.cell(row=row, column=2, value="(gagal load)").alignment = cell_alignment
+                elif image_url and not pillow_available:
+                    # Show URL as text if Pillow not available
+                    ws.cell(row=row, column=2, value="(lihat link)").alignment = cell_alignment
 
-    filename = f"bukti_foto_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
-    return StreamingResponse(
-        excel_buffer,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
-    )
+        column_widths = [5, 18, 15, 20, 25, 15, 12]
+        for col, width in enumerate(column_widths, 1):
+            ws.column_dimensions[openpyxl.utils.get_column_letter(col)].width = width
+
+        excel_buffer = BytesIO()
+        wb.save(excel_buffer)
+        excel_buffer.seek(0)
+
+        print(f"[Excel Export] Export completed successfully")
+        filename = f"bukti_foto_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.xlsx"
+        return StreamingResponse(
+            excel_buffer,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        )
+    except Exception as e:
+        print(f"[Excel Export] Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Failed to export: {str(e)}")
 
 
 @router.get("/{alarm_id}", response_model=AlarmResponse)

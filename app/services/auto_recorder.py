@@ -303,6 +303,10 @@ class AutoRecorderService:
             logger.info("MinIO disabled, auto-recorder not starting")
             return
 
+        if not settings.auto_recorder_enabled:
+            logger.info("Auto-recorder disabled by configuration")
+            return
+
         # Check FFmpeg availability once at startup
         if not check_ffmpeg_available():
             logger.warning("FFmpeg not installed, auto-recorder disabled")
@@ -311,6 +315,29 @@ class AutoRecorderService:
         self.running = True
         self._task = asyncio.create_task(self._monitor_loop())
         logger.info("Auto-recorder service started")
+
+    def is_running(self) -> bool:
+        """Check if auto-recorder is currently running."""
+        return self.running and self._task is not None and not self._task.done()
+
+    def get_status(self) -> dict:
+        """Get current status of auto-recorder."""
+        return {
+            "enabled": settings.auto_recorder_enabled,
+            "minio_enabled": settings.minio_enabled,
+            "ffmpeg_available": check_ffmpeg_available(),
+            "running": self.is_running(),
+            "active_recorders": len(self.recorders),
+            "cameras": [
+                {
+                    "camera_id": r.camera_id,
+                    "camera_name": r.camera_name,
+                    "is_recording": r.is_recording,
+                    "aibox_name": r.aibox_name
+                }
+                for r in self.recorders.values()
+            ]
+        }
 
     def stop(self):
         """Stop the auto-recorder service."""
