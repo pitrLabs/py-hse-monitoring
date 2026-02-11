@@ -2,10 +2,13 @@
 Auto Recorder Service
 Automatically records healthy AI camera streams to MinIO in 5-minute chunks.
 Each chunk saved with unique filename (no overwrite).
+
+v2: Uses asyncio subprocess + process group kill to prevent zombie processes.
 """
 import asyncio
 import subprocess
 import os
+import signal
 import tempfile
 import logging
 from datetime import datetime
@@ -23,8 +26,10 @@ logger = logging.getLogger("auto_recorder")
 
 # Configuration
 CHUNK_DURATION_SECONDS = 300  # 5 minutes per chunk
-HEALTH_CHECK_INTERVAL = 60  # Check camera health every 60 seconds (was 30)
+HEALTH_CHECK_INTERVAL = 60  # Check camera health every 60 seconds
 RECORDING_BUCKET = "recordings"
+PROCESS_TERMINATE_TIMEOUT = 10  # seconds to wait for graceful termination
+PROCESS_KILL_TIMEOUT = 5  # seconds to wait after SIGKILL
 
 # Global FFmpeg availability flag - checked once at startup
 _ffmpeg_available: Optional[bool] = None
@@ -51,7 +56,12 @@ def check_ffmpeg_available() -> bool:
 
 
 class CameraRecorder:
-    """Handles recording for a single camera stream."""
+    """
+    Handles recording for a single camera stream.
+
+    Uses asyncio subprocess for proper async integration and process groups
+    to ensure clean termination without zombie processes.
+    """
 
     def __init__(
         self,
@@ -66,7 +76,8 @@ class CameraRecorder:
         self.rtsp_url = rtsp_url
         self.aibox_id = aibox_id
         self.aibox_name = aibox_name
-        self.process: Optional[subprocess.Popen] = None
+        self.process: Optional[asyncio.subprocess.Process] = None
+        self.process_pgid: Optional[int] = None  # Process group ID for cleanup
         self.current_file: Optional[str] = None
         self.recording_start: Optional[datetime] = None
         self.is_recording = False
@@ -78,23 +89,70 @@ class CameraRecorder:
         safe_name = self.camera_name.replace(" ", "_").replace("/", "-")[:30]
         return f"ai_record_{safe_name}_{timestamp}_{unique_id}.mp4"
 
-    async def start_chunk(self) -> bool:
-        """Start recording a new 5-minute chunk."""
-        # Kill any existing process first
-        if self.process is not None:
+    async def _kill_process_group(self, sig: int = signal.SIGTERM) -> None:
+        """Kill the entire process group."""
+        if self.process_pgid:
             try:
-                if self.process.poll() is None:  # Still running
-                    self.process.terminate()
+                os.killpg(self.process_pgid, sig)
+                logger.debug(f"Sent signal {sig} to process group {self.process_pgid}")
+            except ProcessLookupError:
+                pass  # Process already dead
+            except Exception as e:
+                logger.debug(f"Error killing process group: {e}")
+
+    async def _cleanup_process(self) -> Optional[int]:
+        """
+        Clean up the FFmpeg process properly.
+        Returns the exit code or None if process wasn't running.
+        """
+        if not self.process:
+            return None
+
+        exit_code = None
+
+        try:
+            # Check if process is still running
+            if self.process.returncode is None:
+                # Step 1: Try graceful termination with SIGTERM to process group
+                logger.debug(f"Terminating process group for {self.camera_name}")
+                await self._kill_process_group(signal.SIGTERM)
+
+                try:
+                    # Wait for process to terminate
+                    exit_code = await asyncio.wait_for(
+                        self.process.wait(),
+                        timeout=PROCESS_TERMINATE_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
+                    # Step 2: Force kill with SIGKILL
+                    logger.warning(f"Process didn't terminate gracefully, sending SIGKILL: {self.camera_name}")
+                    await self._kill_process_group(signal.SIGKILL)
+
                     try:
-                        self.process.wait(timeout=5)
-                    except subprocess.TimeoutExpired:
-                        self.process.kill()
-                        self.process.wait()
-            except Exception:
-                pass
-            finally:
-                self.process = None
-                self.is_recording = False
+                        exit_code = await asyncio.wait_for(
+                            self.process.wait(),
+                            timeout=PROCESS_KILL_TIMEOUT
+                        )
+                    except asyncio.TimeoutError:
+                        logger.error(f"Process still alive after SIGKILL: {self.camera_name}")
+            else:
+                exit_code = self.process.returncode
+
+        except Exception as e:
+            logger.error(f"Error during process cleanup for {self.camera_name}: {e}")
+        finally:
+            # Always clear process reference
+            self.process = None
+            self.process_pgid = None
+            self.is_recording = False
+
+        return exit_code
+
+    async def start_chunk(self) -> bool:
+        """Start recording a new 5-minute chunk using async subprocess."""
+        # Clean up any existing process first
+        if self.process is not None:
+            await self._cleanup_process()
 
         try:
             # Check if FFmpeg is available (uses cached result)
@@ -107,35 +165,43 @@ class CameraRecorder:
             self.recording_start = datetime.utcnow()
 
             # FFmpeg command to record RTSP stream
-            # -t: duration in seconds
-            # -c copy: copy codec without re-encoding (faster)
-            # -y: overwrite output file
-            # Note: Timeout options vary by FFmpeg version, using basic options for compatibility
             cmd = [
                 "ffmpeg",
-                "-rtsp_transport", "tcp",  # Use TCP for more reliable streaming
+                "-rtsp_transport", "tcp",
                 "-i", self.rtsp_url,
                 "-t", str(CHUNK_DURATION_SECONDS),
                 "-c", "copy",
-                "-movflags", "+faststart",  # Enable fast start for web playback
+                "-movflags", "+faststart",
                 "-y",
                 self.current_file
             ]
 
             logger.info(f"Starting recording: {self.camera_name} -> {filename}")
 
-            # Start FFmpeg process
-            self.process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.PIPE
+            # Start FFmpeg process with asyncio subprocess
+            # start_new_session=True creates a new process group (like preexec_fn=os.setsid)
+            self.process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,  # Avoid buffer blocking
+                start_new_session=True  # Create new process group for clean termination
             )
+
+            # Store process group ID for later cleanup
+            try:
+                self.process_pgid = os.getpgid(self.process.pid)
+            except Exception:
+                self.process_pgid = self.process.pid  # Fallback to PID
+
             self.is_recording = True
+            logger.debug(f"Started FFmpeg process PID={self.process.pid}, PGID={self.process_pgid}")
             return True
 
         except Exception as e:
             logger.error(f"Failed to start recording {self.camera_name}: {e}", exc_info=True)
             self.is_recording = False
+            self.process = None
+            self.process_pgid = None
             return False
 
     async def stop_chunk(self) -> Optional[str]:
@@ -144,44 +210,15 @@ class CameraRecorder:
             self.is_recording = False
             return None
 
-        exit_code = None
-        stderr_output = ""
         minio_path = None
 
-        try:
-            # Read any FFmpeg stderr output for debugging
-            if self.process.stderr:
-                try:
-                    stderr_output = self.process.stderr.read().decode('utf-8', errors='ignore')[-500:]
-                except:
-                    pass
+        # Clean up the process
+        exit_code = await self._cleanup_process()
 
-            # Check if process is still running
-            if self.process.poll() is None:
-                # Terminate FFmpeg process gracefully
-                self.process.terminate()
-                try:
-                    self.process.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    logger.warning(f"FFmpeg didn't terminate gracefully, killing: {self.camera_name}")
-                    self.process.kill()
-
-            # Always wait to reap the process (prevent zombie)
-            try:
-                self.process.wait()
-                exit_code = self.process.returncode
-            except:
-                pass
-
-        except Exception as e:
-            logger.error(f"Error stopping FFmpeg process: {e}")
-        finally:
-            self.is_recording = False
-            self.process = None
-
-        # Log FFmpeg exit status only on error
-        if exit_code != 0 and exit_code is not None:
-            logger.warning(f"FFmpeg exited with code {exit_code} for {self.camera_name}: {stderr_output[:200] if stderr_output else 'no stderr'}")
+        # Log FFmpeg exit status (0 = success, 255 = interrupted which is expected)
+        if exit_code is not None and exit_code not in (0, 255, -15, -9):
+            # -15 = SIGTERM, -9 = SIGKILL (expected when we stop it)
+            logger.warning(f"FFmpeg exited with code {exit_code} for {self.camera_name}")
 
         # Check if file was created and has content
         try:
@@ -206,7 +243,7 @@ class CameraRecorder:
             if self.current_file and os.path.exists(self.current_file):
                 try:
                     os.remove(self.current_file)
-                except:
+                except Exception:
                     pass
             self.current_file = None
 
@@ -280,7 +317,7 @@ class CameraRecorder:
 
     def check_health(self) -> bool:
         """Check if FFmpeg process is still running."""
-        if self.process and self.process.poll() is None:
+        if self.process and self.process.returncode is None:
             return True
         return False
 
@@ -340,7 +377,7 @@ class AutoRecorderService:
         }
 
     def stop(self):
-        """Stop the auto-recorder service."""
+        """Stop the auto-recorder service synchronously."""
         self.running = False
 
         # Cancel all recording tasks
@@ -348,15 +385,20 @@ class AutoRecorderService:
             task.cancel()
         self._chunk_tasks.clear()
 
-        # Stop all recorders and kill any FFmpeg processes
+        # Stop all recorders - kill process groups directly
         for recorder in self.recorders.values():
-            if recorder.process is not None:
+            if recorder.process is not None and recorder.process.returncode is None:
                 try:
-                    if recorder.process.poll() is None:
+                    # Kill entire process group
+                    if recorder.process_pgid:
+                        try:
+                            os.killpg(recorder.process_pgid, signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+                    else:
                         recorder.process.kill()
-                        recorder.process.wait()
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug(f"Error killing recorder process: {e}")
         self.recorders.clear()
 
         if self._task:
@@ -364,6 +406,29 @@ class AutoRecorderService:
             self._task = None
 
         logger.info("Auto-recorder service stopped")
+
+    async def stop_async(self):
+        """Stop the auto-recorder service asynchronously (cleaner shutdown)."""
+        self.running = False
+
+        # Cancel all recording tasks
+        for task in self._chunk_tasks.values():
+            task.cancel()
+        self._chunk_tasks.clear()
+
+        # Stop all recorders properly
+        for recorder in self.recorders.values():
+            try:
+                await recorder._cleanup_process()
+            except Exception as e:
+                logger.debug(f"Error stopping recorder: {e}")
+        self.recorders.clear()
+
+        if self._task:
+            self._task.cancel()
+            self._task = None
+
+        logger.info("Auto-recorder service stopped (async)")
 
     async def _monitor_loop(self):
         """Main monitoring loop - checks camera health and manages recordings."""
@@ -616,8 +681,16 @@ async def start_auto_recorder():
 
 
 def stop_auto_recorder():
-    """Stop the global auto-recorder service."""
+    """Stop the global auto-recorder service (sync version)."""
     global _service
     if _service:
         _service.stop()
+        _service = None
+
+
+async def stop_auto_recorder_async():
+    """Stop the global auto-recorder service (async version - cleaner shutdown)."""
+    global _service
+    if _service:
+        await _service.stop_async()
         _service = None
