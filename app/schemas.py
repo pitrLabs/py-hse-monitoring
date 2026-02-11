@@ -94,6 +94,21 @@ class UserLogin(BaseModel):
     password: str
 
 
+class UserSessionResponse(BaseModel):
+    """Response for user session info (admin view)"""
+    id: UUID
+    username: str
+    full_name: Optional[str] = None
+    email: str
+    is_active: bool
+    is_superuser: bool
+    is_logged_in: bool
+    last_login_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
 # AI Box Schemas
 class AIBoxBase(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
@@ -277,6 +292,7 @@ class AlarmResponse(AlarmBase):
     acknowledged_by_id: Optional[UUID] = None
     resolved_at: Optional[datetime] = None
     resolved_by_id: Optional[UUID] = None
+    raw_data: Optional[str] = None  # Raw JSON from BM-APP (contains RelativeBox for bounding boxes)
     # MinIO storage fields
     minio_image_path: Optional[str] = None
     minio_labeled_image_path: Optional[str] = None  # Labeled image (with detection boxes)

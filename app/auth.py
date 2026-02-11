@@ -76,10 +76,17 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
                                           detail="Could not validate credentials",
                                           headers={"WWW-Authenticate": "Bearer"})
 
-    # Special exception for session invalidation (logged in from another device)
-    session_invalid_exception = HTTPException(
+    # Exception for session invalidation - logged in from another device
+    session_another_device_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="session_invalid",  # Frontend will detect this specific message
+        detail="session_invalid_another_device",
+        headers={"WWW-Authenticate": "Bearer"}
+    )
+
+    # Exception for session invalidation - force logged out by admin
+    session_force_logout_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="session_invalid_force_logout",
         headers={"WWW-Authenticate": "Bearer"}
     )
 
@@ -101,9 +108,14 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: Session = De
     if user is None:
         raise credentials_exception
 
-    # Validate session_id - if it doesn't match, user logged in from another device
-    if session_id and user.active_session_id and session_id != user.active_session_id:
-        raise session_invalid_exception
+    # Validate session_id - check if session is still valid
+    if session_id:
+        if not user.active_session_id:
+            # Database has no active session = force logged out by admin
+            raise session_force_logout_exception
+        elif session_id != user.active_session_id:
+            # Session IDs don't match = logged in from another device
+            raise session_another_device_exception
 
     return user
 

@@ -41,6 +41,7 @@ def _add_presigned_urls(alarm: Alarm) -> dict:
         "acknowledged_by_id": alarm.acknowledged_by_id,
         "resolved_at": alarm.resolved_at,
         "resolved_by_id": alarm.resolved_by_id,
+        "raw_data": alarm.raw_data,  # Include raw_data for bounding box info
         "minio_image_path": alarm.minio_image_path,
         "minio_labeled_image_path": alarm.minio_labeled_image_path,
         "minio_video_path": alarm.minio_video_path,
@@ -142,17 +143,12 @@ def get_alarm_stats(
 
 
 def _get_severity(alarm_type: str) -> str:
-    """Get severity level for alarm type"""
-    critical_types = ["No Helmet", "NoHelmet", "No Safety Vest", "NoSafetyVest", "Intrusion", "Fire", "Smoke"]
-    high_types = ["No Goggles", "NoGoggles", "No Gloves", "NoGloves"]
-    medium_types = ["No Mask", "NoMask"]
-    if alarm_type in critical_types:
-        return "Critical"
-    elif alarm_type in high_types:
-        return "High"
-    elif alarm_type in medium_types:
-        return "Medium"
-    return "Low"
+    """Get severity level for alarm type.
+
+    Returns same severity for all types since BM-APP doesn't send severity info.
+    """
+    from app.alarm_types import get_alarm_severity
+    return get_alarm_severity(alarm_type).capitalize()
 
 
 @router.get("/export/excel")
@@ -315,8 +311,10 @@ async def export_excel_images(
                 ws.cell(row=row, column=7).alignment = cell_alignment
 
                 image_url = None
+                is_labeled_image = False
                 if alarm.minio_labeled_image_path and storage.is_initialized:
                     image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_labeled_image_path)
+                    is_labeled_image = True
                 elif alarm.minio_image_path and storage.is_initialized:
                     image_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, alarm.minio_image_path)
                 elif alarm.image_url:
@@ -326,7 +324,17 @@ async def export_excel_images(
                     try:
                         img_response = await client.get(image_url)
                         if img_response.status_code == 200:
-                            img = XLImage(BytesIO(img_response.content))
+                            image_content = img_response.content
+                            # Add overlay (timestamp + bounding box) for non-labeled images
+                            if not is_labeled_image and alarm.alarm_time:
+                                image_content = _add_timestamp_overlay(
+                                    image_content,
+                                    alarm.alarm_time,
+                                    alarm.camera_name,
+                                    alarm.raw_data,
+                                    alarm.alarm_type
+                                )
+                            img = XLImage(BytesIO(image_content))
                             img.width, img.height = img_width, img_height
                             ws.add_image(img, f"B{row}")
                     except Exception as e:
@@ -825,8 +833,190 @@ import zipfile
 import httpx
 
 
-def _get_alarm_image_url(alarm: Alarm, db: Session = None) -> Optional[str]:
-    """Get the best available image URL for an alarm."""
+def _add_timestamp_overlay(
+    image_bytes: bytes,
+    timestamp: datetime,
+    camera_name: str = None,
+    raw_data: str = None,
+    alarm_type: str = None
+) -> bytes:
+    """Add timestamp overlay and bounding box to an image.
+
+    Args:
+        image_bytes: Original image as bytes
+        timestamp: The alarm/capture time to display
+        camera_name: Optional camera name to display
+        raw_data: Optional raw JSON data from BM-APP containing RelativeBox
+        alarm_type: Optional alarm type for label
+
+    Returns:
+        Modified image with timestamp and bounding box overlay as bytes
+    """
+    try:
+        from PIL import Image, ImageDraw, ImageFont
+
+        # Open image from bytes
+        img = Image.open(BytesIO(image_bytes))
+
+        # Convert to RGB if necessary (for PNG with transparency)
+        if img.mode in ('RGBA', 'P'):
+            img = img.convert('RGB')
+
+        img_width, img_height = img.size
+
+        # Calculate font size based on image width
+        font_size = max(16, int(img_width * 0.025))
+        small_font_size = max(12, int(img_width * 0.018))
+
+        # Try to load fonts
+        try:
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", font_size)
+            small_font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf", small_font_size)
+        except:
+            try:
+                font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", font_size)
+                small_font = ImageFont.truetype("/System/Library/Fonts/Helvetica.ttc", small_font_size)
+            except:
+                try:
+                    font = ImageFont.truetype("arial.ttf", font_size)
+                    small_font = ImageFont.truetype("arial.ttf", small_font_size)
+                except:
+                    font = ImageFont.load_default()
+                    small_font = font
+
+        # Create overlay for semi-transparent elements
+        overlay = Image.new('RGBA', img.size, (0, 0, 0, 0))
+        overlay_draw = ImageDraw.Draw(overlay)
+
+        # ===== DRAW BOUNDING BOX FROM RAW_DATA =====
+        if raw_data:
+            try:
+                data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                result = data.get("Result", {})
+                relative_box = result.get("RelativeBox")
+
+                if relative_box and len(relative_box) == 4:
+                    # RelativeBox format: [x, y, width, height] in relative coords (0-1)
+                    rel_x, rel_y, rel_w, rel_h = relative_box
+
+                    # Convert to absolute pixel coordinates
+                    box_x = int(rel_x * img_width)
+                    box_y = int(rel_y * img_height)
+                    box_w = int(rel_w * img_width)
+                    box_h = int(rel_h * img_height)
+
+                    # Draw bounding box (red color, 3px width)
+                    box_color = (255, 0, 0, 255)  # Red
+                    line_width = max(2, int(img_width * 0.004))
+
+                    # Draw rectangle outline
+                    for i in range(line_width):
+                        overlay_draw.rectangle(
+                            [box_x - i, box_y - i, box_x + box_w + i, box_y + box_h + i],
+                            outline=box_color
+                        )
+
+                    # Draw label background above the box
+                    label_text = alarm_type or result.get("Type", "Detection")
+                    label_bbox = overlay_draw.textbbox((0, 0), label_text, font=small_font)
+                    label_w = label_bbox[2] - label_bbox[0]
+                    label_h = label_bbox[3] - label_bbox[1]
+
+                    label_x = box_x
+                    label_y = box_y - label_h - 8
+                    if label_y < 0:
+                        label_y = box_y + box_h + 4  # Put below if no space above
+
+                    # Draw label background
+                    overlay_draw.rectangle(
+                        [label_x - 2, label_y - 2, label_x + label_w + 6, label_y + label_h + 4],
+                        fill=(255, 0, 0, 200)
+                    )
+
+                    # Draw label text (will be drawn after compositing)
+
+            except Exception as e:
+                print(f"[Download] Failed to parse bounding box: {e}")
+
+        # ===== DRAW TIMESTAMP =====
+        timestamp_text = timestamp.strftime('%Y-%m-%d %H:%M:%S')
+        if camera_name:
+            timestamp_text = f"{camera_name} | {timestamp_text}"
+
+        # Get text bounding box
+        draw_temp = ImageDraw.Draw(img)
+        bbox = draw_temp.textbbox((0, 0), timestamp_text, font=font)
+        text_width = bbox[2] - bbox[0]
+        text_height = bbox[3] - bbox[1]
+
+        # Position: bottom-left with padding
+        padding = 10
+        x = padding
+        y = img_height - text_height - padding - 5
+
+        # Draw semi-transparent background for timestamp
+        bg_rect = [x - 5, y - 3, x + text_width + 5, y + text_height + 3]
+        overlay_draw.rectangle(bg_rect, fill=(0, 0, 0, 180))
+
+        # Composite overlay onto image
+        img = img.convert('RGBA')
+        img = Image.alpha_composite(img, overlay)
+        img = img.convert('RGB')
+
+        # Draw text elements on final image
+        draw = ImageDraw.Draw(img)
+
+        # Draw timestamp text
+        draw.text((x, y), timestamp_text, font=font, fill=(255, 255, 255))
+
+        # Draw bounding box label text (if we have box data)
+        if raw_data:
+            try:
+                data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+                result = data.get("Result", {})
+                relative_box = result.get("RelativeBox")
+
+                if relative_box and len(relative_box) == 4:
+                    rel_x, rel_y, rel_w, rel_h = relative_box
+                    box_x = int(rel_x * img_width)
+                    box_y = int(rel_y * img_height)
+                    box_h = int(rel_h * img_height)
+
+                    label_text = alarm_type or result.get("Type", "Detection")
+                    label_bbox = draw.textbbox((0, 0), label_text, font=small_font)
+                    label_h = label_bbox[3] - label_bbox[1]
+
+                    label_x = box_x
+                    label_y = box_y - label_h - 8
+                    if label_y < 0:
+                        label_y = box_y + box_h + 4
+
+                    draw.text((label_x + 2, label_y), label_text, font=small_font, fill=(255, 255, 255))
+            except:
+                pass
+
+        # Save to bytes
+        output = BytesIO()
+        img.save(output, format='JPEG', quality=95)
+        output.seek(0)
+
+        return output.getvalue()
+
+    except ImportError:
+        print("[Download] Pillow not available, returning original image")
+        return image_bytes
+    except Exception as e:
+        print(f"[Download] Failed to add timestamp overlay: {e}")
+        return image_bytes
+
+
+def _get_alarm_image_url(alarm: Alarm, db: Session = None) -> tuple[Optional[str], bool]:
+    """Get the best available image URL for an alarm.
+
+    Returns:
+        Tuple of (image_url, is_labeled) where is_labeled indicates if the image
+        already has bounding boxes drawn by the AI.
+    """
     storage = get_minio_storage()
 
     # Priority 1: MinIO labeled image (with detection boxes)
@@ -834,19 +1024,19 @@ def _get_alarm_image_url(alarm: Alarm, db: Session = None) -> Optional[str]:
         return storage.get_presigned_url(
             settings.minio_bucket_alarm_images,
             alarm.minio_labeled_image_path
-        )
+        ), True  # Already has boxes
 
     # Priority 2: MinIO raw image
     if storage.is_initialized and alarm.minio_image_path:
         return storage.get_presigned_url(
             settings.minio_bucket_alarm_images,
             alarm.minio_image_path
-        )
+        ), False  # Raw image, needs boxes
 
     # Priority 3: BM-APP image_url
     if alarm.image_url:
         if alarm.image_url.startswith(('http://', 'https://')):
-            return alarm.image_url
+            return alarm.image_url, False
         # Construct BM-APP URL for relative paths - use AI Box's api_url if available
         bmapp_base = None
         if alarm.aibox_id and db:
@@ -856,9 +1046,9 @@ def _get_alarm_image_url(alarm: Alarm, db: Session = None) -> Optional[str]:
         if not bmapp_base:
             # Fallback to config (deprecated)
             bmapp_base = settings.bmapp_api_url.rsplit('/api', 1)[0]
-        return f"{bmapp_base}/{alarm.image_url.lstrip('/')}"
+        return f"{bmapp_base}/{alarm.image_url.lstrip('/')}", False
 
-    return None
+    return None, False
 
 
 @router.get("/{alarm_id}/download-image")
@@ -867,12 +1057,12 @@ async def download_alarm_image(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Download the alarm image."""
+    """Download the alarm image with timestamp overlay."""
     alarm = db.query(Alarm).filter(Alarm.id == alarm_id).first()
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
 
-    image_url = _get_alarm_image_url(alarm, db)
+    image_url, is_labeled = _get_alarm_image_url(alarm, db)
     if not image_url:
         raise HTTPException(status_code=404, detail="No image available for this alarm")
 
@@ -881,11 +1071,21 @@ async def download_alarm_image(
             response = await client.get(image_url)
             response.raise_for_status()
 
+            # Add timestamp and bounding box overlay to image
+            # Only draw bounding box if using raw image (labeled already has boxes)
+            image_with_overlay = _add_timestamp_overlay(
+                response.content,
+                alarm.alarm_time,
+                alarm.camera_name,
+                alarm.raw_data if not is_labeled else None,  # Only pass raw_data for raw images
+                alarm.alarm_type if not is_labeled else None
+            )
+
             # Generate filename
             filename = f"alarm_{alarm.alarm_type}_{alarm.alarm_time.strftime('%Y%m%d_%H%M%S')}.jpg"
 
             return Response(
-                content=response.content,
+                content=image_with_overlay,
                 media_type="image/jpeg",
                 headers={
                     "Content-Disposition": f'attachment; filename="{filename}"'
@@ -901,7 +1101,7 @@ async def bulk_download_images(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Download multiple alarm images as a ZIP file."""
+    """Download multiple alarm images as a ZIP file with timestamp overlays."""
     if not alarm_ids:
         raise HTTPException(status_code=400, detail="No alarm IDs provided")
 
@@ -918,7 +1118,7 @@ async def bulk_download_images(
     async with httpx.AsyncClient(timeout=30.0) as client:
         with zipfile.ZipFile(zip_buffer, 'w', zipfile.ZIP_DEFLATED) as zf:
             for alarm in alarms:
-                image_url = _get_alarm_image_url(alarm, db)
+                image_url, is_labeled = _get_alarm_image_url(alarm, db)
                 if not image_url:
                     continue
 
@@ -926,8 +1126,18 @@ async def bulk_download_images(
                     response = await client.get(image_url)
                     response.raise_for_status()
 
+                    # Add timestamp and bounding box overlay to each image
+                    # Only draw bounding box if using raw image (labeled already has boxes)
+                    image_with_overlay = _add_timestamp_overlay(
+                        response.content,
+                        alarm.alarm_time,
+                        alarm.camera_name,
+                        alarm.raw_data if not is_labeled else None,
+                        alarm.alarm_type if not is_labeled else None
+                    )
+
                     filename = f"{alarm.alarm_type}_{alarm.alarm_time.strftime('%Y%m%d_%H%M%S')}_{str(alarm.id)[:8]}.jpg"
-                    zf.writestr(filename, response.content)
+                    zf.writestr(filename, image_with_overlay)
                 except Exception as e:
                     print(f"Failed to download image for alarm {alarm.id}: {e}")
                     continue

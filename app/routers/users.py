@@ -13,6 +13,62 @@ from app.models import User, Role, VideoSource
 
 router = APIRouter(prefix="/users", tags=["User Management"])
 
+
+# ==================== Session Management ====================
+
+@router.get("/sessions", response_model=List[schemas.UserSessionResponse])
+def list_user_sessions(db: Session = Depends(get_db),
+                       _: User = Depends(require_permission("users", "read"))):
+    """List all users with their login status (for admin)"""
+    users = db.query(User).all()
+
+    result = []
+    for user in users:
+        result.append({
+            "id": user.id,
+            "username": user.username,
+            "full_name": user.full_name,
+            "email": user.email,
+            "is_active": user.is_active,
+            "is_superuser": user.is_superuser,
+            "is_logged_in": user.active_session_id is not None,
+            "last_login_at": user.last_login_at
+        })
+
+    return result
+
+
+@router.post("/{user_id}/force-logout")
+def force_logout_user(user_id: UUID, db: Session = Depends(get_db),
+                      current_user: User = Depends(require_permission("users", "update"))):
+    """Force logout a user by clearing their active session (admin only)"""
+    user = db.query(User).filter(User.id == user_id).first()
+
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Prevent admin from force-logging out themselves
+    if user.id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Cannot force logout yourself. Use the logout endpoint instead."
+        )
+
+    if not user.active_session_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="User is not currently logged in"
+        )
+
+    # Clear the active session
+    user.active_session_id = None
+    db.commit()
+
+    return {"message": f"User {user.username} has been logged out successfully"}
+
+
+# ==================== User CRUD ====================
+
 @router.get("/", response_model=List[schemas.UserWithAssignedCameras])
 def list_users(skip: int = 0, limit: int = 100, db: Session = Depends(get_db),
                _: User = Depends(require_permission("users", "read"))):

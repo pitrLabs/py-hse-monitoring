@@ -33,7 +33,11 @@ def register(user_data: schemas.UserCreate, db: Session = Depends(get_db)):
 
 
 @router.post("/login", response_model=schemas.Token)
-def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db)):
+def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    force: bool = False,
+    db: Session = Depends(get_db)
+):
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
@@ -44,7 +48,37 @@ def login(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depend
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST,
                             detail="Inactive user")
 
-    # Generate new session ID - this invalidates any previous sessions
+    # Check if user already has an active session elsewhere
+    if user.active_session_id:
+        # Check if session is expired (last_login_at + token_expiry < now)
+        session_expired = False
+        if user.last_login_at:
+            session_expiry_time = user.last_login_at + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+            if datetime.utcnow() > session_expiry_time:
+                session_expired = True
+                print(f"[Auth] Session expired for {user.username}, allowing new login")
+
+        if not session_expired:
+            # Session still valid - check if user is admin/superuser
+            is_admin = user.is_superuser or any(
+                role.name.lower() in ['manager', 'superadmin']
+                for role in user.roles
+            )
+
+            # If force=true and user is admin, allow kicking old session
+            if force and is_admin:
+                pass  # Allow login, will overwrite session below
+            else:
+                # Return error with is_admin flag so frontend can show Force Login option
+                raise HTTPException(
+                    status_code=status.HTTP_409_CONFLICT,
+                    detail={
+                        "code": "already_logged_in",
+                        "is_admin": is_admin
+                    }
+                )
+
+    # Generate new session ID
     session_id = generate_session_id()
     user.active_session_id = session_id
     user.last_login_at = datetime.utcnow()
