@@ -80,8 +80,21 @@ class CameraRecorder:
 
     async def start_chunk(self) -> bool:
         """Start recording a new 5-minute chunk."""
-        if self.is_recording:
-            await self.stop_chunk()
+        # Kill any existing process first
+        if self.process is not None:
+            try:
+                if self.process.poll() is None:  # Still running
+                    self.process.terminate()
+                    try:
+                        self.process.wait(timeout=5)
+                    except subprocess.TimeoutExpired:
+                        self.process.kill()
+                        self.process.wait()
+            except Exception:
+                pass
+            finally:
+                self.process = None
+                self.is_recording = False
 
         try:
             # Check if FFmpeg is available (uses cached result)
@@ -127,35 +140,51 @@ class CameraRecorder:
 
     async def stop_chunk(self) -> Optional[str]:
         """Stop current recording chunk and upload to MinIO."""
-        if not self.is_recording or not self.process:
+        if not self.process:
+            self.is_recording = False
             return None
+
+        exit_code = None
+        stderr_output = ""
+        minio_path = None
 
         try:
             # Read any FFmpeg stderr output for debugging
-            stderr_output = ""
             if self.process.stderr:
                 try:
                     stderr_output = self.process.stderr.read().decode('utf-8', errors='ignore')[-500:]
                 except:
                     pass
 
-            # Terminate FFmpeg process gracefully
-            self.process.terminate()
-            try:
-                self.process.wait(timeout=10)
-            except subprocess.TimeoutExpired:
-                logger.warning(f"FFmpeg didn't terminate gracefully, killing: {self.camera_name}")
-                self.process.kill()
+            # Check if process is still running
+            if self.process.poll() is None:
+                # Terminate FFmpeg process gracefully
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    logger.warning(f"FFmpeg didn't terminate gracefully, killing: {self.camera_name}")
+                    self.process.kill()
 
-            exit_code = self.process.returncode
+            # Always wait to reap the process (prevent zombie)
+            try:
+                self.process.wait()
+                exit_code = self.process.returncode
+            except:
+                pass
+
+        except Exception as e:
+            logger.error(f"Error stopping FFmpeg process: {e}")
+        finally:
             self.is_recording = False
             self.process = None
 
-            # Log FFmpeg exit status only on error
-            if exit_code != 0 and exit_code is not None:
-                logger.warning(f"FFmpeg exited with code {exit_code} for {self.camera_name}: {stderr_output[:200] if stderr_output else 'no stderr'}")
+        # Log FFmpeg exit status only on error
+        if exit_code != 0 and exit_code is not None:
+            logger.warning(f"FFmpeg exited with code {exit_code} for {self.camera_name}: {stderr_output[:200] if stderr_output else 'no stderr'}")
 
-            # Check if file was created and has content
+        # Check if file was created and has content
+        try:
             if self.current_file and os.path.exists(self.current_file):
                 file_size = os.path.getsize(self.current_file)
 
@@ -166,17 +195,12 @@ class CameraRecorder:
                         # Save recording entry to database
                         await self._save_to_database(minio_path, file_size)
                         logger.info(f"Saved recording: {minio_path} ({file_size} bytes)")
-                    return minio_path
                 else:
                     logger.warning(f"Empty recording file for {self.camera_name}")
             else:
                 logger.warning(f"Recording file not created for {self.camera_name}")
-
-            return None
-
         except Exception as e:
-            logger.error(f"Error stopping recording {self.camera_name}: {e}", exc_info=True)
-            return None
+            logger.error(f"Error processing recording file: {e}")
         finally:
             # Cleanup temp file
             if self.current_file and os.path.exists(self.current_file):
@@ -185,6 +209,8 @@ class CameraRecorder:
                 except:
                     pass
             self.current_file = None
+
+        return minio_path
 
     async def _upload_to_minio(self) -> Optional[str]:
         """Upload recording file to MinIO."""
@@ -295,10 +321,15 @@ class AutoRecorderService:
             task.cancel()
         self._chunk_tasks.clear()
 
-        # Stop all recorders
+        # Stop all recorders and kill any FFmpeg processes
         for recorder in self.recorders.values():
-            if recorder.is_recording:
-                asyncio.create_task(recorder.stop_chunk())
+            if recorder.process is not None:
+                try:
+                    if recorder.process.poll() is None:
+                        recorder.process.kill()
+                        recorder.process.wait()
+                except Exception:
+                    pass
         self.recorders.clear()
 
         if self._task:
