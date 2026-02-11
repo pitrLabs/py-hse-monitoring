@@ -425,20 +425,33 @@ def get_video_url(
             detail="Recording not found"
         )
 
-    if not recording.file_url:
+    video_url = None
+
+    # Priority 1: MinIO storage (new recordings from auto-recorder)
+    if recording.minio_file_path and recording.minio_file_path != "UNAVAILABLE":
+        storage = get_minio_storage()
+        if storage and storage.is_initialized:
+            video_url = storage.get_presigned_url(
+                settings.minio_bucket_recordings,
+                recording.minio_file_path,
+                expires=3600  # 1 hour
+            )
+
+    # Priority 2: BM-APP URL (old recordings)
+    if not video_url and recording.file_url:
+        video_url = recording.file_url
+        if not video_url.startswith("http"):
+            bmapp_url = settings.bmapp_api_url.replace("/api", "")
+            if video_url.startswith("/"):
+                video_url = f"{bmapp_url}{video_url}"
+            else:
+                video_url = f"{bmapp_url}/{video_url}"
+
+    if not video_url:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Recording has no video URL"
         )
-
-    # Build full URL if relative
-    video_url = recording.file_url
-    if not video_url.startswith("http"):
-        bmapp_url = settings.bmapp_api_url.replace("/api", "")
-        if video_url.startswith("/"):
-            video_url = f"{bmapp_url}{video_url}"
-        else:
-            video_url = f"{bmapp_url}/{video_url}"
 
     return {
         "id": str(recording.id),
@@ -446,6 +459,56 @@ def get_video_url(
         "video_url": video_url,
         "duration": recording.duration,
         "start_time": recording.start_time.isoformat() if recording.start_time else None
+    }
+
+
+@router.get("/download/{recording_id}")
+def get_download_url(
+    recording_id: UUID,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get a download URL for a recording."""
+    recording = db.query(Recording).filter(Recording.id == recording_id).first()
+
+    if not recording:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording not found"
+        )
+
+    download_url = None
+
+    # Priority 1: MinIO storage
+    if recording.minio_file_path and recording.minio_file_path != "UNAVAILABLE":
+        storage = get_minio_storage()
+        if storage and storage.is_initialized:
+            # Generate presigned URL with download headers
+            download_url = storage.get_presigned_url(
+                settings.minio_bucket_recordings,
+                recording.minio_file_path,
+                expires=3600,  # 1 hour
+                response_headers={
+                    "response-content-disposition": f'attachment; filename="{recording.file_name}"'
+                }
+            )
+
+    # Priority 2: BM-APP URL (proxy through stream endpoint)
+    if not download_url and recording.file_url:
+        # Use the stream endpoint for download
+        download_url = f"/api/recordings/stream/{recording_id}"
+
+    if not download_url:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Recording has no downloadable file"
+        )
+
+    return {
+        "id": str(recording.id),
+        "file_name": recording.file_name,
+        "download_url": download_url,
+        "file_size": recording.file_size
     }
 
 

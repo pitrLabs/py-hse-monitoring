@@ -14,6 +14,7 @@ from app.services.auto_recorder import start_auto_recorder, stop_auto_recorder
 from app.services.mediamtx import add_stream_path
 from app.routers.alarms import save_alarm_from_bmapp
 from app.models import VideoSource
+from app.config import settings
 import asyncio
 
 
@@ -50,25 +51,59 @@ async def sync_mediamtx_on_startup():
 async def lifespan(app: FastAPI):
     # Startup
     init_db()
-    await start_alarm_listener(on_alarm_received)
+
+    # Start alarm listener (WebSocket to BM-APP)
+    if settings.alarm_listener_enabled:
+        await start_alarm_listener(on_alarm_received)
+        print("[Startup] Alarm listener started")
+    else:
+        print("[Startup] Alarm listener DISABLED")
+
     # Sync MediaMTX after a short delay to ensure MediaMTX is ready
     asyncio.create_task(delayed_mediamtx_sync())
+
     # Start camera status polling (real-time online/offline detection)
-    await start_camera_status_poller()
-    # Start auto-sync for BM-APP analytics data (people count, zone occupancy, etc.)
-    await start_analytics_sync()
+    if settings.camera_status_enabled:
+        await start_camera_status_poller()
+        print("[Startup] Camera status poller started")
+    else:
+        print("[Startup] Camera status poller DISABLED")
+
+    # Start auto-sync for BM-APP analytics data
+    if settings.analytics_sync_enabled:
+        await start_analytics_sync()
+        print("[Startup] Analytics sync started")
+    else:
+        print("[Startup] Analytics sync DISABLED")
+
     # Initialize MinIO storage and start media sync
-    initialize_minio()
-    await start_media_sync()
-    # Start auto-recorder for AI camera streams (5-min chunks to MinIO)
-    await start_auto_recorder()
+    if settings.minio_enabled:
+        initialize_minio()
+        await start_media_sync()
+        print("[Startup] MinIO and media sync started")
+
+        # Start auto-recorder for AI camera streams
+        if settings.auto_recorder_enabled:
+            await start_auto_recorder()
+            print("[Startup] Auto-recorder started")
+        else:
+            print("[Startup] Auto-recorder DISABLED")
+    else:
+        print("[Startup] MinIO DISABLED (media sync and auto-recorder skipped)")
+
     yield
+
     # Shutdown
-    stop_alarm_listener()
-    stop_camera_status_poller()
-    stop_analytics_sync()
-    stop_media_sync()
-    stop_auto_recorder()
+    if settings.alarm_listener_enabled:
+        stop_alarm_listener()
+    if settings.camera_status_enabled:
+        stop_camera_status_poller()
+    if settings.analytics_sync_enabled:
+        stop_analytics_sync()
+    if settings.minio_enabled:
+        stop_media_sync()
+        if settings.auto_recorder_enabled:
+            stop_auto_recorder()
 
 
 async def delayed_mediamtx_sync():

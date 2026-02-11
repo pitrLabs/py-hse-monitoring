@@ -203,7 +203,8 @@ class MinioStorageService:
         self,
         bucket: str,
         object_name: str,
-        expiry_seconds: Optional[int] = None
+        expires: Optional[int] = None,
+        response_headers: Optional[dict] = None
     ) -> Optional[str]:
         """
         Generate a presigned URL for downloading/viewing a file.
@@ -211,7 +212,8 @@ class MinioStorageService:
         Args:
             bucket: Bucket name
             object_name: Object path
-            expiry_seconds: URL expiry time (default from settings)
+            expires: URL expiry time in seconds (default from settings)
+            response_headers: Optional headers to include (e.g., content-disposition for download)
 
         Returns:
             Presigned URL or None on failure
@@ -219,14 +221,15 @@ class MinioStorageService:
         if not self.is_initialized:
             return None
 
-        if expiry_seconds is None:
-            expiry_seconds = settings.minio_presigned_url_expiry
+        if expires is None:
+            expires = settings.minio_presigned_url_expiry
 
         try:
             url = self.client.presigned_get_object(
                 bucket,
                 object_name,
-                expires=timedelta(seconds=expiry_seconds)
+                expires=timedelta(seconds=expires),
+                response_headers=response_headers
             )
             return url
         except S3Error as e:

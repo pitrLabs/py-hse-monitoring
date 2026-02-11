@@ -31,6 +31,12 @@ class Settings(BaseSettings):
 
     # Camera status polling
     camera_status_poll_interval: int = Field(default=10, alias="CAMERA_STATUS_POLL_INTERVAL")
+    camera_status_enabled: bool = Field(default=True, alias="CAMERA_STATUS_ENABLED")
+
+    # Background services (for debugging)
+    alarm_listener_enabled: bool = Field(default=True, alias="ALARM_LISTENER_ENABLED")
+    analytics_sync_enabled: bool = Field(default=True, alias="ANALYTICS_SYNC_ENABLED")
+    auto_recorder_enabled: bool = Field(default=True, alias="AUTO_RECORDER_ENABLED")
 
     # External RTU API for camera locations
     rtu_api_key: str = Field(default="plnup2djateng@!145", alias="RTU_API_KEY")
