@@ -23,15 +23,26 @@ class BmAppAlarmListener:
         aibox_id: Optional[str] = None,
         aibox_name: Optional[str] = None,
         aibox_code: Optional[str] = None,
+        aibox_api_url: Optional[str] = None,
         on_alarm: Optional[Callable] = None
     ):
         self.ws_url = ws_url
         self.aibox_id = aibox_id
         self.aibox_name = aibox_name
         self.aibox_code = aibox_code
+        self.aibox_api_url = aibox_api_url
         self.on_alarm = on_alarm
         self.running = False
         self._connection = None
+
+    def _get_aibox_base_url(self) -> str | None:
+        """Get base URL for AI Box (without /api suffix)."""
+        if self.aibox_api_url:
+            api_url = self.aibox_api_url.rstrip('/')
+            if api_url.endswith('/api'):
+                return api_url[:-4]
+            return api_url
+        return None
 
     async def connect(self):
         """Connect to AI Box WebSocket and listen for alarms"""
@@ -292,6 +303,7 @@ class BmAppAlarmListener:
             # AI Box info
             "aibox_id": self.aibox_id,
             "aibox_name": self.aibox_name,
+            "aibox_base_url": self._get_aibox_base_url(),
         }
 
     def stop(self):
@@ -351,6 +363,7 @@ class MultiAIBoxAlarmManager:
                     aibox_id=box_id,
                     aibox_name=box.name,
                     aibox_code=box.code,
+                    aibox_api_url=box.api_url,
                     on_alarm=self.on_alarm
                 )
                 self.listeners[box_id] = listener

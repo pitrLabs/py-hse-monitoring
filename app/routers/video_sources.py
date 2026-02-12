@@ -5,11 +5,13 @@ from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import get_current_user, get_current_superuser
 from app.database import get_db
-from app.models import VideoSource, User
+from app.models import VideoSource, User, AIBox
 from app.services.mediamtx import add_stream_path, remove_stream_path, update_stream_path
 from app.services.bmapp_client import (
     sync_media_to_bmapp,
+    sync_media_to_aibox,
     delete_media_from_bmapp,
+    delete_media_from_aibox,
     get_bmapp_client
 )
 from app.config import settings
@@ -110,6 +112,7 @@ async def create_video_source(
         description=video_source_data.description,
         location=video_source_data.location,
         group_id=video_source_data.group_id,
+        aibox_id=video_source_data.aibox_id,
         is_active=video_source_data.is_active,
         sound_alert=video_source_data.sound_alert,
         created_by_id=current_user.id
@@ -123,8 +126,19 @@ async def create_video_source(
     if db_video_source.is_active:
         background_tasks.add_task(add_stream_path, db_video_source.stream_name, db_video_source.url)
 
-    # Sync with BM-APP in background
-    if settings.bmapp_enabled:
+    # Sync with BM-APP in background (use specific AI Box URL if assigned)
+    if settings.bmapp_enabled and db_video_source.aibox_id:
+        aibox = db.query(AIBox).filter(AIBox.id == db_video_source.aibox_id).first()
+        if aibox and aibox.api_url:
+            background_tasks.add_task(
+                sync_media_to_aibox,
+                aibox.api_url,
+                db_video_source.stream_name,
+                db_video_source.url,
+                db_video_source.description or ""
+            )
+    elif settings.bmapp_enabled:
+        # Fallback to default BM-APP URL
         background_tasks.add_task(
             sync_media_to_bmapp,
             db_video_source.stream_name,
@@ -186,6 +200,9 @@ async def update_video_source(
     if video_source_update.group_id is not None:
         video_source.group_id = video_source_update.group_id
 
+    if video_source_update.aibox_id is not None:
+        video_source.aibox_id = video_source_update.aibox_id
+
     if video_source_update.is_active is not None:
         video_source.is_active = video_source_update.is_active
 
@@ -194,6 +211,13 @@ async def update_video_source(
 
     db.commit()
     db.refresh(video_source)
+
+    # Get AI Box URL if assigned
+    aibox_api_url = None
+    if video_source.aibox_id:
+        aibox = db.query(AIBox).filter(AIBox.id == video_source.aibox_id).first()
+        if aibox and aibox.api_url:
+            aibox_api_url = aibox.api_url
 
     # Sync with MediaMTX in background
     stream_name_changed = old_stream_name != video_source.stream_name
@@ -207,24 +231,43 @@ async def update_video_source(
             background_tasks.add_task(add_stream_path, video_source.stream_name, video_source.url)
         # Sync with BM-APP - delete old, add new
         if settings.bmapp_enabled:
-            background_tasks.add_task(delete_media_from_bmapp, old_stream_name)
-            background_tasks.add_task(
-                sync_media_to_bmapp,
-                video_source.stream_name,
-                video_source.url,
-                video_source.description or ""
-            )
+            if aibox_api_url:
+                background_tasks.add_task(delete_media_from_aibox, aibox_api_url, old_stream_name)
+                background_tasks.add_task(
+                    sync_media_to_aibox,
+                    aibox_api_url,
+                    video_source.stream_name,
+                    video_source.url,
+                    video_source.description or ""
+                )
+            else:
+                background_tasks.add_task(delete_media_from_bmapp, old_stream_name)
+                background_tasks.add_task(
+                    sync_media_to_bmapp,
+                    video_source.stream_name,
+                    video_source.url,
+                    video_source.description or ""
+                )
     elif url_changed and video_source.is_active:
         # Update existing path
         background_tasks.add_task(update_stream_path, video_source.stream_name, video_source.url)
         # Sync with BM-APP
         if settings.bmapp_enabled:
-            background_tasks.add_task(
-                sync_media_to_bmapp,
-                video_source.stream_name,
-                video_source.url,
-                video_source.description or ""
-            )
+            if aibox_api_url:
+                background_tasks.add_task(
+                    sync_media_to_aibox,
+                    aibox_api_url,
+                    video_source.stream_name,
+                    video_source.url,
+                    video_source.description or ""
+                )
+            else:
+                background_tasks.add_task(
+                    sync_media_to_bmapp,
+                    video_source.stream_name,
+                    video_source.url,
+                    video_source.description or ""
+                )
     elif status_changed:
         if video_source.is_active:
             background_tasks.add_task(add_stream_path, video_source.stream_name, video_source.url)
@@ -251,6 +294,14 @@ async def delete_video_source(
         )
 
     stream_name = video_source.stream_name
+    aibox_id = video_source.aibox_id
+
+    # Get AI Box URL before deleting
+    aibox_api_url = None
+    if aibox_id:
+        aibox = db.query(AIBox).filter(AIBox.id == aibox_id).first()
+        if aibox and aibox.api_url:
+            aibox_api_url = aibox.api_url
 
     db.delete(video_source)
     db.commit()
@@ -260,7 +311,10 @@ async def delete_video_source(
 
     # Remove from BM-APP in background
     if settings.bmapp_enabled:
-        background_tasks.add_task(delete_media_from_bmapp, stream_name)
+        if aibox_api_url:
+            background_tasks.add_task(delete_media_from_aibox, aibox_api_url, stream_name)
+        else:
+            background_tasks.add_task(delete_media_from_bmapp, stream_name)
 
     return None
 

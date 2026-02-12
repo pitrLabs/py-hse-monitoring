@@ -203,6 +203,7 @@ class VideoSourceResponse(BaseModel):
     location: Optional[str] = None
     group_id: Optional[UUID] = None
     aibox_id: Optional[UUID] = None
+    task_session: Optional[str] = None  # First AI task session name
     is_active: bool
     sound_alert: bool
     is_synced_bmapp: bool = False
@@ -285,6 +286,7 @@ class AlarmResponse(AlarmBase):
     bmapp_id: Optional[str] = None
     aibox_id: Optional[UUID] = None
     aibox_name: Optional[str] = None
+    aibox_base_url: Optional[str] = None  # Base URL for AI Box (e.g., http://103.75.84.183:2322)
     status: str
     alarm_time: datetime
     created_at: datetime

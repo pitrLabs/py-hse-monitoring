@@ -123,6 +123,13 @@ class VideoSource(Base):
     # Users (operators) who have access to this camera
     assigned_users: Mapped[List["User"]] = relationship("User", secondary=user_video_sources, back_populates="assigned_video_sources", lazy="selectin")
 
+    @property
+    def task_session(self) -> str | None:
+        """Get the first AI task's session name"""
+        if self.ai_tasks and len(self.ai_tasks) > 0:
+            return self.ai_tasks[0].task_name
+        return None
+
 
 class AITask(Base):
     """AI detection task linked to a video source"""

@@ -19,6 +19,17 @@ from app.services.minio_storage import get_minio_storage
 router = APIRouter(prefix="/alarms", tags=["alarms"])
 
 
+def _get_aibox_base_url(alarm: Alarm) -> str | None:
+    """Get the base URL for the AI Box (without /api suffix)."""
+    if alarm.aibox and alarm.aibox.api_url:
+        # Remove /api suffix if present
+        api_url = alarm.aibox.api_url.rstrip('/')
+        if api_url.endswith('/api'):
+            return api_url[:-4]  # Remove '/api'
+        return api_url
+    return None
+
+
 def _add_presigned_urls(alarm: Alarm) -> dict:
     """Add presigned URLs to alarm response."""
     data = {
@@ -42,6 +53,11 @@ def _add_presigned_urls(alarm: Alarm) -> dict:
         "resolved_at": alarm.resolved_at,
         "resolved_by_id": alarm.resolved_by_id,
         "raw_data": alarm.raw_data,  # Include raw_data for bounding box info
+        # AI Box info
+        "aibox_id": alarm.aibox_id,
+        "aibox_name": alarm.aibox_name,
+        "aibox_base_url": _get_aibox_base_url(alarm),
+        # MinIO storage fields
         "minio_image_path": alarm.minio_image_path,
         "minio_labeled_image_path": alarm.minio_labeled_image_path,
         "minio_video_path": alarm.minio_video_path,
@@ -787,6 +803,10 @@ async def receive_bmapp_alarm(
             "description": alarm.description,
             "alarm_time": alarm.alarm_time.isoformat() if alarm.alarm_time else None,
             "status": alarm.status,
+            # AI Box info for correct image URL
+            "aibox_id": str(alarm.aibox_id) if alarm.aibox_id else None,
+            "aibox_name": alarm.aibox_name,
+            "aibox_base_url": _get_aibox_base_url(alarm),
             # MinIO presigned URLs for images
             "minio_image_url": minio_image_url,
             "minio_labeled_image_url": minio_labeled_image_url,

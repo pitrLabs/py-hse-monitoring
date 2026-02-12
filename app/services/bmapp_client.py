@@ -476,6 +476,44 @@ async def delete_media_from_bmapp(name: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 
+async def sync_media_to_aibox(
+    aibox_api_url: str,
+    name: str,
+    url: str,
+    description: str = "",
+    use_tcp: bool = False
+) -> dict:
+    """Sync a video source to a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "message": "BM-APP integration is disabled"}
+
+    # Create a client with the specific AI Box URL
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+
+    try:
+        result = await client.add_media(name, url, description, use_tcp)
+        return {"status": "success", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def delete_media_from_aibox(aibox_api_url: str, name: str) -> dict:
+    """Delete a media from a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "message": "BM-APP integration is disabled"}
+
+    # Create a client with the specific AI Box URL
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+
+    try:
+        result = await client.delete_media(name)
+        return {"status": "success", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 async def create_ai_task(
     name: str,
     media_name: str,
