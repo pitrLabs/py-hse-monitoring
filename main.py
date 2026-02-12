@@ -24,6 +24,8 @@ async def on_alarm_received(alarm_data: dict):
     db = SessionLocal()
     try:
         await save_alarm_from_bmapp(alarm_data, db)
+    except Exception as e:
+        print(f"[Main] Failed to save alarm to database: {e}")
     finally:
         db.close()
 

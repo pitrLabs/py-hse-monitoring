@@ -110,49 +110,77 @@ class CameraStatusPoller:
         return statuses
 
     async def _poll_bmapp(self) -> Dict[str, dict]:
-        """Poll BM-APP task list for AI task status"""
+        """Poll all active AI Boxes for AI task status"""
         statuses = {}
         try:
-            from app.services.bmapp_client import get_bmapp_client
-            client = get_bmapp_client()
-            tasks = await client.get_task_list()
+            from app.database import SessionLocal
+            from app.models import AIBox
+            db = SessionLocal()
+            try:
+                aiboxes = db.query(AIBox).filter(AIBox.is_active == True).all()
+                aibox_data = [(str(b.id), b.name, b.api_url) for b in aiboxes]
+            finally:
+                db.close()
 
-            for task in tasks:
-                session = task.get("AlgTaskSession", "").strip()
-                if not session:
-                    continue
-
-                # AlgTaskStatus.type: 4=Healthy, 1=Connecting, 0=Stopped, 2=Error
-                task_status = task.get("AlgTaskStatus", {})
-                status_type = task_status.get("type", 0) if isinstance(task_status, dict) else 0
-
-                if status_type == 4:
-                    status = STATUS_ONLINE
-                elif status_type == 1:
-                    status = STATUS_CONNECTING
-                elif status_type == 2:
-                    status = STATUS_ERROR
-                else:
-                    status = STATUS_OFFLINE
-
-                media_name = task.get("MediaName", "").strip()
-                status_entry = {
-                    "status": status,
-                    "source": "bmapp",
-                    "taskSession": session,
-                    "mediaName": media_name,
-                }
-
-                # Store by session key for BM-APP lookups
-                key = f"bmapp:{session}"
-                statuses[key] = status_entry
-
-                # Also store by MediaName (which matches stream_name) for Video Sources lookup
-                if media_name:
-                    statuses[media_name] = status_entry
+            for aibox_id, aibox_name, api_url in aibox_data:
+                try:
+                    await self._poll_single_aibox(statuses, aibox_id, aibox_name, api_url)
+                except Exception as e:
+                    print(f"[CameraStatus] BM-APP poll error for {aibox_name}: {e}")
         except Exception as e:
             print(f"[CameraStatus] BM-APP poll error: {e}")
         return statuses
+
+    async def _poll_single_aibox(self, statuses: Dict[str, dict], aibox_id: str, aibox_name: str, api_url: str):
+        """Poll a single AI Box for task statuses"""
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            response = await client.post(
+                f"{api_url.rstrip('/')}/alg_task_fetch",
+                json={}
+            )
+            if response.status_code != 200:
+                return
+
+            data = response.json()
+            if data.get("Result", {}).get("Code", -1) != 0:
+                return
+
+            tasks = data.get("Content", [])
+
+        for task in tasks:
+            session = task.get("AlgTaskSession", "").strip()
+            if not session:
+                continue
+
+            # AlgTaskStatus.type: 4=Healthy, 1=Connecting, 0=Stopped, 2=Error
+            task_status = task.get("AlgTaskStatus", {})
+            status_type = task_status.get("type", 0) if isinstance(task_status, dict) else 0
+
+            if status_type == 4:
+                status = STATUS_ONLINE
+            elif status_type == 1:
+                status = STATUS_CONNECTING
+            elif status_type == 2:
+                status = STATUS_ERROR
+            else:
+                status = STATUS_OFFLINE
+
+            media_name = task.get("MediaName", "").strip()
+            status_entry = {
+                "status": status,
+                "source": "bmapp",
+                "aibox": aibox_name,
+                "taskSession": session,
+                "mediaName": media_name,
+            }
+
+            # Store by session key for BM-APP lookups
+            key = f"bmapp:{session}"
+            statuses[key] = status_entry
+
+            # Also store by MediaName (which matches stream_name) for Video Sources lookup
+            if media_name:
+                statuses[media_name] = status_entry
 
     def _diff_statuses(self, new_statuses: Dict[str, dict]) -> Dict[str, dict]:
         """Return only statuses that changed"""

@@ -363,32 +363,6 @@ async def sync_mediamtx(
     return {"message": f"Syncing {len(video_sources)} video sources to MediaMTX"}
 
 
-@router.post("/sync-bmapp", status_code=status.HTTP_200_OK)
-async def sync_bmapp(
-    background_tasks: BackgroundTasks,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_superuser)
-):
-    """Sync all video sources to BM-APP. Only for superusers (admins)."""
-    if not settings.bmapp_enabled:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="BM-APP integration is disabled"
-        )
-
-    video_sources = db.query(VideoSource).all()
-
-    for vs in video_sources:
-        background_tasks.add_task(
-            sync_media_to_bmapp,
-            vs.stream_name,
-            vs.url,
-            vs.description or ""
-        )
-
-    return {"message": f"Syncing {len(video_sources)} video sources to BM-APP"}
-
-
 @router.get("/bmapp/media", status_code=status.HTTP_200_OK)
 async def get_bmapp_media(
     current_user: User = Depends(get_current_user)
@@ -461,84 +435,135 @@ async def import_from_bmapp(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
 ):
-    """Import all media/cameras from BM-APP into our database.
+    """Import cameras from ALL active AI Boxes into our database.
 
     This will:
-    1. Fetch all media from BM-APP
-    2. Create VideoSource entries in database (skip if stream_name exists)
-    3. Sync to MediaMTX for raw RTSP streaming
+    1. Fetch media lists from each active AI Box
+    2. Create VideoSource entries with correct aibox_id (skip if stream_name exists)
+    3. Remove orphan records not found in any AI Box
+    4. Sync active sources to MediaMTX
 
     Only for superusers (admins).
     """
-    if not settings.bmapp_enabled:
+    import httpx
+
+    aiboxes = db.query(AIBox).filter(AIBox.is_active == True).all()
+    if not aiboxes:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="BM-APP integration is disabled"
-        )
-
-    try:
-        client = get_bmapp_client()
-        media_list = await client.get_media_list()
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch media from BM-APP: {str(e)}"
+            detail="No active AI Boxes configured"
         )
 
     imported = 0
+    updated = 0
     skipped = 0
+    removed = 0
     errors = []
+    all_stream_names = set()
 
-    for media in media_list:
-        media_name = media.get("MediaName", "")
-        media_url = media.get("MediaUrl", "")
-        media_desc = media.get("MediaDesc", "")
-
-        if not media_name or not media_url:
-            errors.append(f"Invalid media entry: {media}")
-            continue
-
-        # Check if already exists
-        existing = db.query(VideoSource).filter(VideoSource.stream_name == media_name).first()
-        if existing:
-            skipped += 1
-            continue
-
-        # Determine source type from URL
-        source_type = "rtsp"
-        if media_url.startswith("http"):
-            source_type = "http"
-        elif media_url.startswith("file"):
-            source_type = "file"
-
-        # Create new video source
+    for aibox in aiboxes:
+        api_url = aibox.api_url.rstrip("/")
         try:
-            db_video_source = VideoSource(
-                name=media_name,
-                url=media_url,
-                stream_name=media_name,
-                source_type=source_type,
-                description=media_desc,
-                is_active=True,
-                is_synced_bmapp=True,
-                created_by_id=current_user.id
-            )
-            db.add(db_video_source)
-            db.commit()
-            db.refresh(db_video_source)
-
-            # Sync to MediaMTX in background
-            background_tasks.add_task(add_stream_path, db_video_source.stream_name, db_video_source.url)
-
-            imported += 1
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                response = await client.post(f"{api_url}/alg_media_fetch", json={})
+                if response.status_code != 200:
+                    errors.append(f"{aibox.name}: BM-APP returned status {response.status_code}")
+                    continue
+                data = response.json()
+                if data.get("Result", {}).get("Code", -1) != 0:
+                    errors.append(f"{aibox.name}: {data.get('Result', {}).get('Desc', 'Unknown error')}")
+                    continue
+                media_list = data.get("Content", [])
         except Exception as e:
-            db.rollback()
-            errors.append(f"Failed to import {media_name}: {str(e)}")
+            errors.append(f"{aibox.name}: Failed to connect - {str(e)}")
+            continue
+
+        for media in media_list:
+            media_name = media.get("MediaName", "")
+            media_url = media.get("MediaUrl", "")
+            media_desc = media.get("MediaDesc", "")
+
+            if not media_name or not media_url:
+                continue
+
+            all_stream_names.add(media_name)
+
+            existing = db.query(VideoSource).filter(VideoSource.stream_name == media_name).first()
+            if existing:
+                # Update aibox_id and URL if needed
+                changed = False
+                if existing.aibox_id != aibox.id:
+                    existing.aibox_id = aibox.id
+                    existing.is_synced_bmapp = True
+                    changed = True
+                if existing.url != media_url:
+                    existing.url = media_url
+                    changed = True
+                if changed:
+                    updated += 1
+                else:
+                    skipped += 1
+                continue
+
+            # Determine source type
+            source_type = "rtsp"
+            if media_url.startswith("http"):
+                source_type = "http"
+            elif media_url.startswith("file"):
+                source_type = "file"
+
+            try:
+                db_vs = VideoSource(
+                    name=media_name,
+                    url=media_url,
+                    stream_name=media_name,
+                    source_type=source_type,
+                    description=media_desc,
+                    is_active=True,
+                    is_synced_bmapp=True,
+                    aibox_id=aibox.id,
+                    created_by_id=current_user.id
+                )
+                db.add(db_vs)
+                imported += 1
+            except Exception as e:
+                errors.append(f"Failed to create {media_name}: {str(e)}")
+
+    # Remove orphan records (in DB but not in any AI Box)
+    if all_stream_names:
+        from app.models import AITask
+        from sqlalchemy import text
+
+        orphans = db.query(VideoSource).filter(
+            VideoSource.is_synced_bmapp == True,
+            ~VideoSource.stream_name.in_(all_stream_names)
+        ).all()
+        orphan_ids = [o.id for o in orphans]
+
+        if orphan_ids:
+            # Delete dependent records first (ai_tasks, association tables)
+            db.query(AITask).filter(AITask.video_source_id.in_(orphan_ids)).delete(synchronize_session=False)
+            db.execute(text("DELETE FROM user_video_sources WHERE video_source_id = ANY(:ids)"), {"ids": orphan_ids})
+            db.execute(text("DELETE FROM user_camera_group_assignments WHERE video_source_id = ANY(:ids)"), {"ids": orphan_ids})
+
+            for orphan in orphans:
+                background_tasks.add_task(remove_stream_path, orphan.stream_name)
+                removed += 1
+
+            db.query(VideoSource).filter(VideoSource.id.in_(orphan_ids)).delete(synchronize_session=False)
+
+    db.commit()
+
+    # Sync active sources to MediaMTX
+    active_sources = db.query(VideoSource).filter(VideoSource.is_active == True).all()
+    for vs in active_sources:
+        background_tasks.add_task(add_stream_path, vs.stream_name, vs.url)
 
     return {
-        "message": f"Import completed",
+        "message": f"Import completed: {imported} imported, {updated} updated, {removed} removed, {skipped} unchanged",
         "imported": imported,
+        "updated": updated,
+        "removed": removed,
         "skipped": skipped,
-        "total_from_bmapp": len(media_list),
         "errors": errors if errors else None
     }

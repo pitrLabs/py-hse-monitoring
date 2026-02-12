@@ -13,6 +13,20 @@ from app.utils.timezone import parse_bmapp_time, parse_bmapp_timestamp_us, now_u
 # Connected WebSocket clients for broadcasting alarms
 connected_clients: Set = set()
 
+# Fields to strip from raw_data before storing (base64 images are too large for VARCHAR)
+_LARGE_FIELDS = {"ImageData", "imageData", "ImageDataLabeled", "imageDataLabeled"}
+
+
+def _strip_large_fields(data: dict) -> dict:
+    """Strip large base64 image fields from raw alarm data before storing as raw_data."""
+    stripped = {}
+    for k, v in data.items():
+        if k in _LARGE_FIELDS:
+            stripped[k] = f"<{len(v)} chars>" if v else ""
+        else:
+            stripped[k] = v
+    return stripped
+
 
 class BmAppAlarmListener:
     """Listens to a single AI Box WebSocket for real-time alarms"""
@@ -232,9 +246,15 @@ class BmAppAlarmListener:
         image_data_base64 = data.get("ImageData") or data.get("imageData") or ""
         labeled_image_data_base64 = data.get("ImageDataLabeled") or data.get("imageDataLabeled") or ""
 
+        # ===== LOCAL FILE PATHS (for HTTP fetch fallback when base64 is empty) =====
+        local_raw_path = data.get("LocalRawPath") or ""
+        local_labeled_path = data.get("LocalLabeledPath") or ""
+
         # Debug logging for image data
         print(f"[BmApp] Alarm parsed - imageUrl: {image_url[:100] if image_url else 'NONE'}")
         print(f"[BmApp] ImageData: {len(image_data_base64)} chars, ImageDataLabeled: {len(labeled_image_data_base64)} chars")
+        if local_raw_path or local_labeled_path:
+            print(f"[BmApp] LocalRawPath: {local_raw_path}, LocalLabeledPath: {local_labeled_path}")
 
         # ===== MEDIA URL (RTSP) =====
         media_url = (
@@ -296,10 +316,13 @@ class BmAppAlarmListener:
             "media_url": media_url,  # RTSP URL for video source
             "description": description,
             "alarm_time": alarm_time,
-            "raw_data": json.dumps(data),
+            "raw_data": json.dumps(_strip_large_fields(data)),
             # Base64 image data for MinIO storage
             "image_data_base64": image_data_base64,
             "labeled_image_data_base64": labeled_image_data_base64,
+            # Local file paths (for HTTP fetch fallback)
+            "local_raw_path": local_raw_path,
+            "local_labeled_path": local_labeled_path,
             # AI Box info
             "aibox_id": self.aibox_id,
             "aibox_name": self.aibox_name,

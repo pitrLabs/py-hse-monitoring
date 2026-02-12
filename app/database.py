@@ -174,3 +174,29 @@ def _upgrade_schema():
                 ))
                 conn.commit()
                 print("[Migration] Done: media_url column added to alarms")
+
+        # One-time fix: correct alarm_time from UTC+8→UTC to WIB→UTC (+1 hour)
+        # BM-APP timestamps were treated as UTC+8, now treated as WIB (UTC+7)
+        if '_applied_migrations' not in inspector.get_table_names():
+            conn.execute(text(
+                "CREATE TABLE _applied_migrations (name VARCHAR(100) PRIMARY KEY, applied_at TIMESTAMP DEFAULT NOW())"
+            ))
+            conn.commit()
+
+        already_done = conn.execute(text(
+            "SELECT 1 FROM _applied_migrations WHERE name = 'fix_alarm_timezone_utc8_to_wib'"
+        )).fetchone()
+
+        if not already_done:
+            alarm_count = conn.execute(text("SELECT COUNT(*) FROM alarms")).scalar() if 'alarms' in inspector.get_table_names() else 0
+            if alarm_count > 0:
+                print(f"[Migration] Correcting alarm_time timezone for {alarm_count} alarms (+1 hour)...")
+                conn.execute(text(
+                    "UPDATE alarms SET alarm_time = alarm_time + interval '1 hour'"
+                ))
+            conn.execute(text(
+                "INSERT INTO _applied_migrations (name) VALUES ('fix_alarm_timezone_utc8_to_wib')"
+            ))
+            conn.commit()
+            if alarm_count > 0:
+                print("[Migration] Done: alarm_time corrected for all existing alarms")

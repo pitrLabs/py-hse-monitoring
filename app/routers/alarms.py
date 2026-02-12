@@ -545,6 +545,42 @@ def _save_base64_image_to_minio(base64_data: str, prefix: str = "alarm") -> Opti
     return None
 
 
+async def _fetch_and_save_image(client, aibox_base_url: str, local_path: str, prefix: str) -> Optional[str]:
+    """Fetch image from AI Box HTTP server and save to MinIO. Returns object path or None."""
+    url = f"{aibox_base_url.rstrip('/')}/{local_path.lstrip('/')}"
+    try:
+        response = await client.get(url)
+        response.raise_for_status()
+        image_bytes = response.content
+
+        if not image_bytes or len(image_bytes) < 100:
+            print(f"[Alarm] HTTP fetch returned too small response for {prefix}: {len(image_bytes)} bytes")
+            return None
+
+        storage = get_minio_storage()
+        if not storage.is_initialized:
+            print(f"[Alarm] MinIO not initialized, cannot save fetched {prefix}")
+            return None
+
+        object_name = storage.generate_object_name(prefix, "jpg")
+        result = storage.upload_bytes(
+            settings.minio_bucket_alarm_images,
+            object_name,
+            image_bytes,
+            "image/jpeg"
+        )
+
+        if result:
+            print(f"[Alarm] HTTP fetch + MinIO save OK for {prefix}: {object_name} ({len(image_bytes)} bytes)")
+            return object_name
+        else:
+            print(f"[Alarm] MinIO upload returned None for fetched {prefix}")
+    except Exception as e:
+        print(f"[Alarm] HTTP fetch failed for {prefix} from {url}: {e}")
+
+    return None
+
+
 # Internal function to save alarm from BM-APP
 async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     """Save an alarm received from BM-APP to database"""
@@ -570,14 +606,41 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
     # Save raw image
     if image_data_base64:
         minio_image_path = _save_base64_image_to_minio(image_data_base64, "alarm_raw")
-    else:
-        print("[Alarm] No raw image base64 data received from BM-APP")
 
     # Save labeled image (with detection boxes) - prioritize this!
     if labeled_image_data_base64:
         minio_labeled_image_path = _save_base64_image_to_minio(labeled_image_data_base64, "alarm_labeled")
-    else:
-        print("[Alarm] No labeled image base64 data received from BM-APP")
+
+    # Fallback: Fetch images from AI Box HTTP server when base64 is not provided
+    aibox_base_url = alarm_data.get("aibox_base_url")
+    if aibox_base_url and (not minio_image_path or not minio_labeled_image_path):
+        local_raw_path = alarm_data.get("local_raw_path", "")
+        local_labeled_path = alarm_data.get("local_labeled_path", "")
+
+        if local_raw_path or local_labeled_path:
+            print(f"[Alarm] Attempting HTTP fetch from AI Box: {aibox_base_url}")
+            try:
+                import httpx
+                async with httpx.AsyncClient(timeout=15.0) as client:
+                    # Fetch raw image if not already saved
+                    if not minio_image_path and local_raw_path:
+                        minio_image_path = await _fetch_and_save_image(
+                            client, aibox_base_url, local_raw_path, "alarm_raw"
+                        )
+
+                    # Fetch labeled image if not already saved
+                    if not minio_labeled_image_path and local_labeled_path:
+                        minio_labeled_image_path = await _fetch_and_save_image(
+                            client, aibox_base_url, local_labeled_path, "alarm_labeled"
+                        )
+
+                    # If still no raw image but labeled path exists, try that as raw
+                    if not minio_image_path and not local_raw_path and local_labeled_path:
+                        minio_image_path = await _fetch_and_save_image(
+                            client, aibox_base_url, local_labeled_path, "alarm_raw"
+                        )
+            except Exception as e:
+                print(f"[Alarm] HTTP fetch fallback failed: {e}")
 
     # Parse aibox_id if provided (comes as string from parsed alarm)
     aibox_id = alarm_data.get("aibox_id")
@@ -587,6 +650,11 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
             aibox_id = UUID(aibox_id)
         except ValueError:
             aibox_id = None
+
+    # Truncate raw_data to fit VARCHAR(5000) as safety net
+    raw_data_str = alarm_data.get("raw_data", "")
+    if raw_data_str and len(raw_data_str) > 4900:
+        raw_data_str = raw_data_str[:4900] + "..."
 
     alarm = Alarm(
         bmapp_id=alarm_data.get("bmapp_id"),
@@ -600,7 +668,7 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
         video_url=alarm_data.get("video_url"),
         media_url=alarm_data.get("media_url"),  # RTSP URL
         description=alarm_data.get("description"),
-        raw_data=alarm_data.get("raw_data"),
+        raw_data=raw_data_str,
         alarm_time=alarm_time,
         status="new",
         # MinIO paths
@@ -611,8 +679,16 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
         aibox_id=aibox_id,
         aibox_name=alarm_data.get("aibox_name"),
     )
-    db.add(alarm)
-    db.commit()
+
+    try:
+        db.add(alarm)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        print(f"[Alarm] DB commit failed: {e}")
+        # Log raw_data length for debugging
+        print(f"[Alarm] raw_data length was: {len(raw_data_str) if raw_data_str else 0}")
+        raise
 
     # Send Telegram notification (async, non-blocking)
     try:

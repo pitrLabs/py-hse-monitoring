@@ -119,9 +119,9 @@ class VideoSource(Base):
     created_by: Mapped["User | None"] = relationship("User", foreign_keys=[created_by_id], lazy="selectin")
     group: Mapped["CameraGroup | None"] = relationship("CameraGroup", lazy="selectin")
     aibox: Mapped["AIBox | None"] = relationship("AIBox", back_populates="video_sources", lazy="selectin")
-    ai_tasks: Mapped[List["AITask"]] = relationship("AITask", back_populates="video_source", lazy="selectin")
+    ai_tasks: Mapped[List["AITask"]] = relationship("AITask", back_populates="video_source", lazy="selectin", passive_deletes=True)
     # Users (operators) who have access to this camera
-    assigned_users: Mapped[List["User"]] = relationship("User", secondary=user_video_sources, back_populates="assigned_video_sources", lazy="selectin")
+    assigned_users: Mapped[List["User"]] = relationship("User", secondary=user_video_sources, back_populates="assigned_video_sources", lazy="selectin", passive_deletes=True)
 
     @property
     def task_session(self) -> str | None:

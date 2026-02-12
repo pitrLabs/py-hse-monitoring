@@ -46,7 +46,9 @@ def wib_to_utc(dt: datetime) -> datetime:
 def parse_bmapp_time(time_str: str) -> datetime:
     """
     Parse BM-APP time string to UTC datetime.
-    BM-APP sends timestamps in China timezone (UTC+8).
+    BM-APP software uses China timezone (UTC+8) internally, but since the
+    AI Box is physically in Indonesia, we treat timestamps as WIB (UTC+7)
+    so the displayed time matches what's burned on alarm photos.
 
     Args:
         time_str: Time string from BM-APP (e.g., "2024-01-28 14:30:00")
@@ -70,8 +72,8 @@ def parse_bmapp_time(time_str: str) -> datetime:
         try:
             # Parse as naive datetime
             dt = datetime.strptime(time_str, fmt)
-            # Assume it's in China timezone and convert to UTC
-            dt = dt.replace(tzinfo=CHINA_TZ)
+            # Treat as WIB (device is in Indonesia) so display matches photo timestamps
+            dt = dt.replace(tzinfo=WIB)
             return dt.astimezone(UTC)
         except ValueError:
             continue
