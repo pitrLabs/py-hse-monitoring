@@ -1,6 +1,5 @@
 import asyncio
 import json
-from datetime import datetime
 from typing import Callable, Optional, Set, Dict, List
 from uuid import UUID
 import websockets
@@ -9,6 +8,7 @@ from sqlalchemy.orm import Session
 from app.config import settings
 from app.database import SessionLocal
 from app.models import AIBox
+from app.utils.timezone import parse_bmapp_time, parse_bmapp_timestamp_us, now_utc
 
 # Connected WebSocket clients for broadcasting alarms
 connected_clients: Set = set()
@@ -243,16 +243,16 @@ class BmAppAlarmListener:
         )
 
         # ===== ALARM TIME =====
-        alarm_time = data.get("Time", "")
-        if not alarm_time:
-            timestamp_us = data.get("TimeStamp", 0)
-            if timestamp_us:
-                try:
-                    alarm_time = datetime.fromtimestamp(timestamp_us / 1_000_000).isoformat()
-                except (ValueError, OSError):
-                    alarm_time = datetime.utcnow().isoformat()
-            else:
-                alarm_time = datetime.utcnow().isoformat()
+        # BM-APP sends time in China timezone (UTC+8), convert to UTC
+        time_str = data.get("Time", "")
+        timestamp_us = data.get("TimeStamp", 0)
+
+        if time_str:
+            alarm_time = parse_bmapp_time(time_str).isoformat()
+        elif timestamp_us:
+            alarm_time = parse_bmapp_timestamp_us(timestamp_us).isoformat()
+        else:
+            alarm_time = now_utc().isoformat()
 
         # ===== DESCRIPTION/SUMMARY =====
         description = (

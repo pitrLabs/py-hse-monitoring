@@ -4,7 +4,6 @@ Periodically syncs analytics data from BM-APP to our database.
 Runs as a background task alongside the camera status poller.
 """
 import asyncio
-from datetime import datetime
 from typing import Optional
 
 from app.config import settings
@@ -13,33 +12,16 @@ from app.models import (
     PeopleCount, ZoneOccupancy, ZoneOccupancyAvg,
     StoreCount, StayDuration, Schedule, SensorDevice, SensorData
 )
+from app.utils.timezone import parse_bmapp_time, now_utc
 
 
 # Default sync interval: 60 seconds
 SYNC_INTERVAL = 60
 
 
-def _parse_time(time_str: str) -> datetime:
-    """Parse BM-APP time string to datetime"""
-    if not time_str:
-        return datetime.utcnow()
-    for fmt in [
-        "%Y-%m-%d %H:%M:%S",
-        "%Y-%m-%dT%H:%M:%S",
-        "%Y-%m-%dT%H:%M:%SZ",
-        "%Y-%m-%d %H:%M:%S.%f",
-        "%Y-%m-%dT%H:%M:%S.%f",
-        "%Y-%m-%d",
-    ]:
-        try:
-            return datetime.strptime(time_str, fmt)
-        except ValueError:
-            continue
-    try:
-        return datetime.utcfromtimestamp(float(time_str))
-    except (ValueError, OSError):
-        pass
-    return datetime.utcnow()
+def _parse_time(time_str: str):
+    """Parse BM-APP time string to UTC datetime (BM-APP uses China timezone UTC+8)"""
+    return parse_bmapp_time(time_str)
 
 
 class AnalyticsSyncService:
@@ -310,7 +292,7 @@ class AnalyticsSyncService:
                     existing.location = record.get("Location", existing.location)
                     existing.is_online = record.get("IsOnline", existing.is_online)
                     existing.extra_data = record
-                    existing.synced_at = datetime.utcnow()
+                    existing.synced_at = now_utc()
                 else:
                     db.add(SensorDevice(
                         bmapp_id=bmapp_id,
