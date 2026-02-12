@@ -39,6 +39,7 @@ services:
       - "8889:8889"   # WebRTC (HTTP)
       - "8890:8890/udp" # WebRTC (UDP)
       - "9997:9997"   # API
+      - "9998:9998"   # Metrics (Prometheus)
     networks:
       - hse-network
     restart: unless-stopped

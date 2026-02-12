@@ -9,6 +9,10 @@ apiAddress: :9997
 apiEncryption: no
 apiAllowOrigin: "*"
 
+# Metrics - untuk monitoring (Prometheus/Grafana)
+metrics: yes
+metricsAddress: :9998
+
 # Authentication - internal users (for API access)
 authInternalUsers:
   - user: any
