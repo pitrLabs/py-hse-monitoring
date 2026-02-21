@@ -401,6 +401,101 @@ class SensorData(Base):
     sensor_device: Mapped["SensorDevice | None"] = relationship("SensorDevice", lazy="selectin")
 
 
+class SystemPreference(Base):
+    """System preference/configuration key-value store per AI Box"""
+    __tablename__ = "system_preferences"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    aibox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_boxes.id", ondelete="CASCADE"), index=True)
+    key: Mapped[str] = mapped_column(String(128), nullable=False, index=True)
+    value: Mapped[str] = mapped_column(String(1024), nullable=False, default="")
+    description: Mapped[str | None] = mapped_column(String(512))
+    category: Mapped[str] = mapped_column(String(50), nullable=False, default="system")  # basic, network, alarm, encoding, database, system
+    value_type: Mapped[str] = mapped_column(String(20), nullable=False, default="string")  # string, int, bool, float
+    is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    aibox: Mapped["AIBox | None"] = relationship("AIBox", lazy="selectin")
+
+
+class AlgorithmThreshold(Base):
+    """Algorithm confidence threshold per AI Box"""
+    __tablename__ = "algorithm_thresholds"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    aibox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_boxes.id", ondelete="CASCADE"), index=True)
+    algorithm_index: Mapped[int] = mapped_column(Integer, nullable=False)  # index in table_threshold (1-88)
+    algorithm_name: Mapped[str] = mapped_column(String(200), nullable=False)  # desc from table_threshold
+    threshold_value: Mapped[float] = mapped_column(Float, default=0.5, nullable=False)
+    is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    aibox: Mapped["AIBox | None"] = relationship("AIBox", lazy="selectin")
+
+
+class FaceAlbum(Base):
+    """Face recognition album (group of face features) per AI Box"""
+    __tablename__ = "face_albums"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    aibox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_boxes.id", ondelete="CASCADE"), index=True)
+    bmapp_id: Mapped[int | None] = mapped_column(Integer)  # suit_id from table_suit
+    name: Mapped[str] = mapped_column(String(512), nullable=False)
+    feature_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # denormalized count
+    is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    aibox: Mapped["AIBox | None"] = relationship("AIBox", lazy="selectin")
+    features: Mapped[List["FaceFeatureRecord"]] = relationship("FaceFeatureRecord", back_populates="album", lazy="select")
+
+
+class FaceFeatureRecord(Base):
+    """Individual face feature record within an album"""
+    __tablename__ = "face_feature_records"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    album_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("face_albums.id", ondelete="CASCADE"), nullable=False, index=True)
+    aibox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_boxes.id", ondelete="SET NULL"), index=True)
+    bmapp_id: Mapped[int | None] = mapped_column(Integer)  # feature_id from table_suit_feature
+    jpeg_path: Mapped[str | None] = mapped_column(String(512))  # local path on bm-app
+    minio_path: Mapped[str | None] = mapped_column(String(512))  # MinIO storage path
+    name: Mapped[str | None] = mapped_column(String(256))  # person name/label
+    extra_data: Mapped[dict | None] = mapped_column(JSONB)
+    is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+
+    album: Mapped["FaceAlbum"] = relationship("FaceAlbum", back_populates="features", lazy="selectin")
+
+
+class ModbusDevice(Base):
+    """Modbus device configuration per AI Box"""
+    __tablename__ = "modbus_devices"
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    aibox_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("ai_boxes.id", ondelete="CASCADE"), index=True)
+    bmapp_id: Mapped[int | None] = mapped_column(Integer)  # id from table_modbus
+    description: Mapped[str] = mapped_column(String(256), nullable=False)
+    alarm_url: Mapped[str | None] = mapped_column(String(512))
+    port: Mapped[int] = mapped_column(Integer, default=502, nullable=False)
+    poll_interval: Mapped[float] = mapped_column(Float, default=1.0, nullable=False)  # seconds
+    device_path: Mapped[str | None] = mapped_column(String(32))  # e.g. /dev/ttyUSB0
+    slave_addr: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    start_reg_addr: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    end_reg_addr: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    start_data: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    end_data: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    device_type: Mapped[int] = mapped_column(Integer, default=0, nullable=False)  # 0=input, 1=output
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    is_synced_bmapp: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    aibox: Mapped["AIBox | None"] = relationship("AIBox", lazy="selectin")
+
+
 class LocalVideo(Base):
     """Local video files uploaded manually for analysis"""
     __tablename__ = "local_videos"

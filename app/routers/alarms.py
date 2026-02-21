@@ -1,5 +1,6 @@
 import json
 import base64
+import httpx
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
@@ -97,6 +98,7 @@ def get_alarms(
     status: Optional[str] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    aibox_id: Optional[UUID] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -114,6 +116,8 @@ def get_alarms(
         filters.append(Alarm.alarm_time >= start_date)
     if end_date:
         filters.append(Alarm.alarm_time <= end_date)
+    if aibox_id:
+        filters.append(Alarm.aibox_id == aibox_id)
 
     if filters:
         query = query.filter(and_(*filters))
@@ -122,32 +126,170 @@ def get_alarms(
     return [_add_presigned_urls(a) for a in alarms]
 
 
+@router.post("/backfill-aibox")
+def backfill_aibox_ids(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Backfill aibox_id on alarms that have NULL aibox_id using multiple matching strategies:
+    1. Exact camera_name = video_sources.name
+    2. camera_id = ai_tasks.task_name
+    3. ILIKE pattern matching per AI Box camera_id prefixes
+    """
+    from sqlalchemy import text
+
+    # Strategy 1: Exact match camera_name = video_sources.name
+    r1 = db.execute(text("""
+        UPDATE alarms
+        SET aibox_id = vs.aibox_id,
+            aibox_name = ab.name
+        FROM video_sources vs
+        JOIN ai_boxes ab ON vs.aibox_id = ab.id
+        WHERE alarms.camera_name = vs.name
+          AND alarms.aibox_id IS NULL
+          AND vs.aibox_id IS NOT NULL
+    """))
+
+    # Strategy 2: camera_id = ai_tasks.task_name (AlgTaskSession)
+    r2 = db.execute(text("""
+        UPDATE alarms
+        SET aibox_id = vs.aibox_id,
+            aibox_name = ab.name
+        FROM ai_tasks tsk
+        JOIN video_sources vs ON tsk.video_source_id = vs.id
+        JOIN ai_boxes ab ON vs.aibox_id = ab.id
+        WHERE alarms.camera_id = tsk.task_name
+          AND alarms.aibox_id IS NULL
+          AND vs.aibox_id IS NOT NULL
+    """))
+
+    # Strategy 3: Match camera_id prefix patterns per box
+    # For each AI box, get distinct camera_id prefixes from its existing tagged alarms
+    # then use those to tag remaining NULL alarms
+    r3 = db.execute(text("""
+        UPDATE alarms
+        SET aibox_id = known.aibox_id,
+            aibox_name = known.aibox_name
+        FROM (
+            SELECT DISTINCT
+                SPLIT_PART(camera_id, '-', 1) AS prefix,
+                aibox_id,
+                aibox_name
+            FROM alarms
+            WHERE aibox_id IS NOT NULL
+              AND camera_id IS NOT NULL
+              AND camera_id <> ''
+        ) known
+        WHERE alarms.aibox_id IS NULL
+          AND alarms.camera_id IS NOT NULL
+          AND alarms.camera_id <> ''
+          AND alarms.camera_id ILIKE known.prefix || '%'
+    """))
+
+    db.commit()
+
+    total = r1.rowcount + r2.rowcount + r3.rowcount
+    print(f"[Backfill] Updated {total} alarms (exact name: {r1.rowcount}, task: {r2.rowcount}, prefix pattern: {r3.rowcount})")
+    return {
+        "updated": total,
+        "message": f"Backfilled {total} alarms (name match: {r1.rowcount}, task match: {r2.rowcount}, pattern match: {r3.rowcount})"
+    }
+
+
+@router.get("/debug/aibox-distribution")
+def debug_aibox_distribution(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Debug endpoint: shows how alarms are distributed by aibox_id.
+    Also shows distinct camera_name values to help diagnose backfill issues.
+    """
+    from sqlalchemy import func, text
+
+    # Alarm counts by aibox_id
+    by_aibox = db.execute(text("""
+        SELECT
+            a.aibox_id::text,
+            ab.name as aibox_name,
+            COUNT(*) as alarm_count
+        FROM alarms a
+        LEFT JOIN ai_boxes ab ON a.aibox_id = ab.id
+        GROUP BY a.aibox_id, ab.name
+        ORDER BY alarm_count DESC
+    """)).fetchall()
+
+    # Distinct camera_names in alarms with NULL aibox_id
+    null_cameras = db.execute(text("""
+        SELECT DISTINCT camera_name, camera_id, COUNT(*) as cnt
+        FROM alarms
+        WHERE aibox_id IS NULL
+        GROUP BY camera_name, camera_id
+        ORDER BY cnt DESC
+        LIMIT 20
+    """)).fetchall()
+
+    # VideoSource names and their aibox_id
+    video_sources = db.execute(text("""
+        SELECT vs.name, vs.stream_name, ab.name as aibox_name
+        FROM video_sources vs
+        LEFT JOIN ai_boxes ab ON vs.aibox_id = ab.id
+        ORDER BY ab.name, vs.name
+    """)).fetchall()
+
+    return {
+        "by_aibox": [
+            {"aibox_id": r[0], "aibox_name": r[1], "alarm_count": r[2]}
+            for r in by_aibox
+        ],
+        "null_aibox_cameras": [
+            {"camera_name": r[0], "camera_id": r[1], "count": r[2]}
+            for r in null_cameras
+        ],
+        "video_sources": [
+            {"name": r[0], "stream_name": r[1], "aibox_name": r[2]}
+            for r in video_sources
+        ]
+    }
+
+
 @router.get("/stats")
 def get_alarm_stats(
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
+    aibox_id: Optional[UUID] = None,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
     """Get alarm statistics"""
+    from sqlalchemy import func
     query = db.query(Alarm)
 
     if start_date:
         query = query.filter(Alarm.alarm_time >= start_date)
     if end_date:
         query = query.filter(Alarm.alarm_time <= end_date)
+    if aibox_id:
+        query = query.filter(Alarm.aibox_id == aibox_id)
 
     total = query.count()
     new_count = query.filter(Alarm.status == "new").count()
     acknowledged_count = query.filter(Alarm.status == "acknowledged").count()
     resolved_count = query.filter(Alarm.status == "resolved").count()
 
-    # Get count by type
-    from sqlalchemy import func
-    type_stats = db.query(
+    # Get count by type (reuse same filters via subquery approach)
+    type_query = db.query(
         Alarm.alarm_type,
         func.count(Alarm.id).label("count")
-    ).group_by(Alarm.alarm_type).all()
+    )
+    if start_date:
+        type_query = type_query.filter(Alarm.alarm_time >= start_date)
+    if end_date:
+        type_query = type_query.filter(Alarm.alarm_time <= end_date)
+    if aibox_id:
+        type_query = type_query.filter(Alarm.aibox_id == aibox_id)
+    type_stats = type_query.group_by(Alarm.alarm_type).all()
 
     return {
         "total": total,
@@ -156,6 +298,34 @@ def get_alarm_stats(
         "resolved": resolved_count,
         "by_type": {t.alarm_type: t.count for t in type_stats}
     }
+
+
+@router.get("/stats/by-camera")
+def get_alarm_stats_by_camera(
+    start_date: Optional[datetime] = None,
+    end_date: Optional[datetime] = None,
+    aibox_id: Optional[UUID] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Get alarm count grouped by camera"""
+    from sqlalchemy import func
+    query = db.query(
+        Alarm.camera_name,
+        func.count(Alarm.id).label("count")
+    )
+
+    if start_date:
+        query = query.filter(Alarm.alarm_time >= start_date)
+    if end_date:
+        query = query.filter(Alarm.alarm_time <= end_date)
+    if aibox_id:
+        query = query.filter(Alarm.aibox_id == aibox_id)
+
+    results = query.group_by(Alarm.camera_name).order_by(desc(func.count(Alarm.id))).limit(20).all()
+
+    by_camera = {r.camera_name or "Unknown": r.count for r in results}
+    return {"by_camera": by_camera}
 
 
 def _get_severity(alarm_type: str) -> str:
@@ -692,21 +862,39 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
 
     # Send Telegram notification (async, non-blocking)
     try:
-        # Get image URL for Telegram (prefer labeled image with detection boxes)
         storage = get_minio_storage()
-        image_url_for_telegram = None
+        telegram_image_bytes = None
+        is_labeled = False
+
+        # Get image: prefer labeled (already has detection boxes)
         if minio_labeled_image_path and storage.is_initialized:
-            image_url_for_telegram = storage.get_presigned_url(
-                settings.minio_bucket_alarm_images,
-                minio_labeled_image_path
-            )
+            img_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, minio_labeled_image_path)
+            is_labeled = True
         elif minio_image_path and storage.is_initialized:
-            image_url_for_telegram = storage.get_presigned_url(
-                settings.minio_bucket_alarm_images,
-                minio_image_path
-            )
-        elif alarm_data.get("image_url"):
-            image_url_for_telegram = alarm_data.get("image_url")
+            img_url = storage.get_presigned_url(settings.minio_bucket_alarm_images, minio_image_path)
+        elif alarm_data.get("image_url") and alarm_data["image_url"].startswith("http"):
+            img_url = alarm_data["image_url"]
+        else:
+            img_url = None
+
+        # Download and add overlay (bounding box + timestamp) for raw images
+        if img_url:
+            try:
+                async with httpx.AsyncClient(timeout=15.0) as img_client:
+                    img_resp = await img_client.get(img_url)
+                    img_resp.raise_for_status()
+                    telegram_image_bytes = img_resp.content
+
+                    if not is_labeled:
+                        telegram_image_bytes = _add_timestamp_overlay(
+                            telegram_image_bytes,
+                            alarm_time if isinstance(alarm_time, datetime) else datetime.utcnow(),
+                            alarm.camera_name,
+                            alarm.raw_data,
+                            alarm.alarm_type
+                        )
+            except Exception as e:
+                print(f"[Alarm] Failed to download image for Telegram: {e}")
 
         await telegram.send_alarm_notification(
             alarm_type=alarm.alarm_type,
@@ -715,7 +903,7 @@ async def save_alarm_from_bmapp(alarm_data: dict, db: Session):
             location=alarm.location,
             alarm_time=alarm_time if isinstance(alarm_time, datetime) else datetime.utcnow(),
             confidence=alarm.confidence,
-            image_url=image_url_for_telegram,
+            image_bytes=telegram_image_bytes,
             aibox_name=alarm.aibox_name
         )
     except Exception as e:

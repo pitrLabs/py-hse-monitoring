@@ -74,6 +74,30 @@ class TelegramService:
             # Fallback to text message if photo fails
             return await self.send_message(caption)
 
+    async def send_photo_bytes(self, image_bytes: bytes, caption: str = "", parse_mode: str = "HTML") -> bool:
+        """Send a photo from bytes with optional caption"""
+        if not self.is_configured:
+            return False
+
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                response = await client.post(
+                    f"{self.api_url}/sendPhoto",
+                    data={
+                        "chat_id": self.chat_id,
+                        "caption": caption,
+                        "parse_mode": parse_mode
+                    },
+                    files={
+                        "photo": ("alarm.jpg", image_bytes, "image/jpeg")
+                    }
+                )
+                response.raise_for_status()
+                return True
+        except Exception as e:
+            print(f"[Telegram] Failed to send photo bytes: {e}")
+            return await self.send_message(caption)
+
     async def send_alarm_notification(
         self,
         alarm_type: str,
@@ -83,6 +107,7 @@ class TelegramService:
         alarm_time: datetime,
         confidence: Optional[float] = None,
         image_url: Optional[str] = None,
+        image_bytes: Optional[bytes] = None,
         aibox_name: Optional[str] = None
     ) -> bool:
         """Send a formatted alarm notification"""
@@ -125,8 +150,10 @@ class TelegramService:
 
         message += "\n\n#HSEMonitoring #Alarm"
 
-        # Send with photo if available
-        if image_url:
+        # Send with photo if available (prefer pre-processed bytes)
+        if image_bytes:
+            return await self.send_photo_bytes(image_bytes, message)
+        elif image_url:
             return await self.send_photo(image_url, message)
         else:
             return await self.send_message(message)

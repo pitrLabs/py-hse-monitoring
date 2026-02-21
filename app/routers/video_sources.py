@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -409,9 +409,16 @@ async def get_bmapp_tasks(
 
 @router.get("/bmapp/abilities", status_code=status.HTTP_200_OK)
 async def get_bmapp_abilities(
+    aibox_id: Optional[UUID] = None,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Get all available AI abilities from BM-APP."""
+    """
+    Get AI abilities from BM-APP.
+
+    If aibox_id is provided, queries that specific AI Box.
+    Otherwise, queries the default BM-APP URL from settings.
+    """
     if not settings.bmapp_enabled:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -419,8 +426,20 @@ async def get_bmapp_abilities(
         )
 
     try:
-        client = get_bmapp_client()
-        abilities = await client.get_abilities()
+        if aibox_id:
+            # Query specific AI Box
+            aibox = db.query(AIBox).filter(AIBox.id == aibox_id).first()
+            if not aibox:
+                raise HTTPException(status_code=404, detail="AI Box not found")
+
+            from app.services.bmapp_client import BmAppClient
+            client = BmAppClient(base_url=aibox.api_url)
+            abilities = await client.get_abilities()
+        else:
+            # Query default BM-APP
+            client = get_bmapp_client()
+            abilities = await client.get_abilities()
+
         return {"abilities": abilities}
     except Exception as e:
         raise HTTPException(

@@ -514,6 +514,193 @@ async def delete_media_from_aibox(aibox_api_url: str, name: str) -> dict:
         return {"status": "error", "message": str(e)}
 
 
+async def get_preferences_from_aibox(aibox_api_url: str) -> dict:
+    """Fetch all preferences from a specific AI Box via alg_config_fetch"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "content": []}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/alg_config_fetch")
+        return {"status": "success", "content": result.get("Content", [])}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "content": []}
+
+
+async def set_preferences_on_aibox(aibox_api_url: str, preferences: list) -> dict:
+    """Push preferences to a specific AI Box via alg_config_import (batch)"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled"}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/alg_config_import", {"Config": preferences})
+        return {"status": "success", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def get_thresholds_from_aibox(aibox_api_url: str) -> dict:
+    """Fetch algorithm thresholds from a specific AI Box.
+    BM-APP returns field 'Threshold' (not 'Content').
+    Each item: {id, desc, value}
+    """
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "content": []}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/alg_threshold_fetch")
+        return {"status": "success", "content": result.get("Threshold", [])}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "content": []}
+
+
+async def set_thresholds_on_aibox(aibox_api_url: str, thresholds: list) -> dict:
+    """Push algorithm thresholds to a specific AI Box.
+    Payload format: [{id, desc, value}, ...]
+    """
+    if not settings.bmapp_enabled:
+        return {"status": "disabled"}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/alg_threshold_config", {"Threshold": thresholds})
+        return {"status": "success", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def get_face_albums_from_aibox(aibox_api_url: str) -> dict:
+    """Fetch face albums from a specific AI Box via faceengine/album/list.
+    NOTE: This endpoint may not exist on all BM-APP firmware versions.
+    Returns status='unsupported' when BM-APP returns Code != 0.
+    """
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "content": []}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/faceengine/album/list")
+        code = result.get("Result", {}).get("Code", 0)
+        if code != 0:
+            desc = result.get("Result", {}).get("Desc", "Unknown error")
+            return {"status": "unsupported", "message": f"BM-APP: {desc}", "content": []}
+        return {"status": "success", "content": result.get("Content", [])}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "content": []}
+
+
+async def get_face_features_from_aibox(aibox_api_url: str, album_id: int) -> dict:
+    """Fetch face features from a specific AI Box album via faceengine/feature/list.
+    NOTE: This endpoint may not exist on all BM-APP firmware versions.
+    """
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "content": []}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/faceengine/feature/list", {"SuitId": album_id})
+        code = result.get("Result", {}).get("Code", 0)
+        if code != 0:
+            desc = result.get("Result", {}).get("Desc", "Unknown error")
+            return {"status": "unsupported", "message": f"BM-APP: {desc}", "content": []}
+        return {"status": "success", "content": result.get("Content", [])}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "content": []}
+
+
+async def get_modbus_devices_from_aibox(aibox_api_url: str) -> dict:
+    """Fetch modbus device configs from a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "content": []}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/app_modbus_fetch")
+        return {"status": "success", "content": result.get("Content", [])}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "content": []}
+
+
+async def set_modbus_devices_on_aibox(aibox_api_url: str, devices: list) -> dict:
+    """Push modbus device config to a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled"}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/app_modbus_config", {"Content": devices})
+        return {"status": "success", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def ping_on_aibox(aibox_api_url: str, host: str, count: int = 4) -> dict:
+    """Run ping tool on a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled"}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/app_net_tool", {"Host": host, "Count": count, "Type": "ping"})
+        return {"status": "success", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def discover_onvif_on_aibox(aibox_api_url: str) -> dict:
+    """Discover ONVIF cameras on a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled", "devices": []}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/app_discover_onvif_devices")
+        return {"status": "success", "devices": result.get("Content", [])}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "devices": []}
+
+
+async def get_system_info_from_aibox(aibox_api_url: str) -> dict:
+    """Get system info from a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled"}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/app_device_stats")
+        return {"status": "success", "content": result.get("Content", {})}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def get_network_config_from_aibox(aibox_api_url: str) -> dict:
+    """Get network config from a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled"}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/app_network_query_v2")
+        return {"status": "success", "content": result.get("Content", {})}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+async def reset_aibox(aibox_api_url: str) -> dict:
+    """Factory reset a specific AI Box"""
+    if not settings.bmapp_enabled:
+        return {"status": "disabled"}
+    client = BmAppClient()
+    client.base_url = aibox_api_url.rstrip('/')
+    try:
+        result = await client._request("/alg_admin_reset")
+        return {"status": "success", "result": result}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
 async def create_ai_task(
     name: str,
     media_name: str,

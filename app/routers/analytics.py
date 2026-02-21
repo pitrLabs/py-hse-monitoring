@@ -5,6 +5,7 @@ Each entity has: GET list + POST sync from BM-APP
 """
 from datetime import datetime
 from typing import List, Optional
+from uuid import UUID
 from fastapi import APIRouter, Depends, Query, HTTPException
 from sqlalchemy.orm import Session
 
@@ -12,7 +13,8 @@ from app.auth import get_current_user, get_current_superuser
 from app.database import get_db
 from app.models import (
     User, PeopleCount, ZoneOccupancy, ZoneOccupancyAvg,
-    StoreCount, StayDuration, Schedule, SensorDevice, SensorData
+    StoreCount, StayDuration, Schedule, SensorDevice, SensorData,
+    VideoSource, AITask
 )
 from app.schemas import (
     PeopleCountResponse, ZoneOccupancyResponse, ZoneOccupancyAvgResponse,
@@ -24,12 +26,27 @@ from app.config import settings
 router = APIRouter(prefix="/analytics", tags=["analytics"])
 
 
+def _get_aibox_task_sessions(db: Session, aibox_id) -> list:
+    """Get all task session names for video sources belonging to a given AI Box"""
+    from uuid import UUID as _UUID
+    if aibox_id is None:
+        return []
+    sessions = (
+        db.query(AITask.task_name)
+        .join(VideoSource, AITask.video_source_id == VideoSource.id)
+        .filter(VideoSource.aibox_id == aibox_id)
+        .all()
+    )
+    return [s[0] for s in sessions if s[0]]
+
+
 # ============ People Count ============
 
 @router.get("/people-count", response_model=List[PeopleCountResponse])
 def list_people_count(
     camera_name: Optional[str] = None,
     task_session: Optional[str] = None,
+    aibox_id: Optional[UUID] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     limit: int = Query(default=100, le=1000),
@@ -42,6 +59,10 @@ def list_people_count(
         query = query.filter(PeopleCount.camera_name == camera_name)
     if task_session:
         query = query.filter(PeopleCount.task_session == task_session)
+    if aibox_id:
+        sessions = _get_aibox_task_sessions(db, aibox_id)
+        if sessions:
+            query = query.filter(PeopleCount.task_session.in_(sessions))
     if start_date:
         query = query.filter(PeopleCount.record_time >= start_date)
     if end_date:
@@ -95,6 +116,7 @@ async def sync_people_count(
 def list_zone_occupancy(
     camera_name: Optional[str] = None,
     task_session: Optional[str] = None,
+    aibox_id: Optional[UUID] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     limit: int = Query(default=100, le=1000),
@@ -107,6 +129,10 @@ def list_zone_occupancy(
         query = query.filter(ZoneOccupancy.camera_name == camera_name)
     if task_session:
         query = query.filter(ZoneOccupancy.task_session == task_session)
+    if aibox_id:
+        sessions = _get_aibox_task_sessions(db, aibox_id)
+        if sessions:
+            query = query.filter(ZoneOccupancy.task_session.in_(sessions))
     if start_date:
         query = query.filter(ZoneOccupancy.record_time >= start_date)
     if end_date:
@@ -157,6 +183,7 @@ async def sync_zone_occupancy(
 @router.get("/zone-occupancy-avg", response_model=List[ZoneOccupancyAvgResponse])
 def list_zone_occupancy_avg(
     camera_name: Optional[str] = None,
+    aibox_id: Optional[UUID] = None,
     limit: int = Query(default=100, le=1000),
     offset: int = 0,
     db: Session = Depends(get_db),
@@ -165,6 +192,10 @@ def list_zone_occupancy_avg(
     query = db.query(ZoneOccupancyAvg)
     if camera_name:
         query = query.filter(ZoneOccupancyAvg.camera_name == camera_name)
+    if aibox_id:
+        sessions = _get_aibox_task_sessions(db, aibox_id)
+        if sessions:
+            query = query.filter(ZoneOccupancyAvg.task_session.in_(sessions))
     return query.order_by(ZoneOccupancyAvg.period_start.desc()).offset(offset).limit(limit).all()
 
 
@@ -212,6 +243,7 @@ async def sync_zone_occupancy_avg(
 @router.get("/store-count", response_model=List[StoreCountResponse])
 def list_store_count(
     camera_name: Optional[str] = None,
+    aibox_id: Optional[UUID] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     limit: int = Query(default=100, le=1000),
@@ -222,6 +254,10 @@ def list_store_count(
     query = db.query(StoreCount)
     if camera_name:
         query = query.filter(StoreCount.camera_name == camera_name)
+    if aibox_id:
+        sessions = _get_aibox_task_sessions(db, aibox_id)
+        if sessions:
+            query = query.filter(StoreCount.task_session.in_(sessions))
     if start_date:
         query = query.filter(StoreCount.record_date >= start_date)
     if end_date:
@@ -272,6 +308,7 @@ async def sync_store_count(
 @router.get("/stay-duration", response_model=List[StayDurationResponse])
 def list_stay_duration(
     camera_name: Optional[str] = None,
+    aibox_id: Optional[UUID] = None,
     start_date: Optional[datetime] = None,
     end_date: Optional[datetime] = None,
     limit: int = Query(default=100, le=1000),
@@ -282,6 +319,10 @@ def list_stay_duration(
     query = db.query(StayDuration)
     if camera_name:
         query = query.filter(StayDuration.camera_name == camera_name)
+    if aibox_id:
+        sessions = _get_aibox_task_sessions(db, aibox_id)
+        if sessions:
+            query = query.filter(StayDuration.task_session.in_(sessions))
     if start_date:
         query = query.filter(StayDuration.record_time >= start_date)
     if end_date:

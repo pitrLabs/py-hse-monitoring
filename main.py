@@ -5,6 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, users, roles, video_sources, ai_tasks
 from app.routers import alarms, locations, recordings, camera_status, analytics
 from app.routers import local_videos, storage, ai_boxes, webrtc_proxy, alarm_types
+from app.routers import preferences, thresholds, face_database, modbus, tools
 from app.services.bmapp import start_alarm_listener, stop_alarm_listener
 from app.services.camera_status import start_camera_status_poller, stop_camera_status_poller
 from app.services.analytics_sync import start_analytics_sync, stop_analytics_sync
@@ -101,6 +102,38 @@ async def lifespan(app: FastAPI):
     else:
         print("[Startup] GPS history recorder DISABLED")
 
+    # Backfill aibox_id on existing alarms that have NULL aibox_id
+    try:
+        from app.database import SessionLocal
+        from sqlalchemy import text
+        with SessionLocal() as db:
+            r1 = db.execute(text("""
+                UPDATE alarms SET aibox_id = vs.aibox_id, aibox_name = ab.name
+                FROM video_sources vs JOIN ai_boxes ab ON vs.aibox_id = ab.id
+                WHERE alarms.camera_name = vs.name AND alarms.aibox_id IS NULL AND vs.aibox_id IS NOT NULL
+            """))
+            r2 = db.execute(text("""
+                UPDATE alarms SET aibox_id = vs.aibox_id, aibox_name = ab.name
+                FROM ai_tasks tsk JOIN video_sources vs ON tsk.video_source_id = vs.id
+                JOIN ai_boxes ab ON vs.aibox_id = ab.id
+                WHERE alarms.camera_id = tsk.task_name AND alarms.aibox_id IS NULL AND vs.aibox_id IS NOT NULL
+            """))
+            r3 = db.execute(text("""
+                UPDATE alarms SET aibox_id = known.aibox_id, aibox_name = known.aibox_name
+                FROM (
+                    SELECT DISTINCT SPLIT_PART(camera_id, '-', 1) AS prefix, aibox_id, aibox_name
+                    FROM alarms WHERE aibox_id IS NOT NULL AND camera_id IS NOT NULL AND camera_id <> ''
+                ) known
+                WHERE alarms.aibox_id IS NULL AND alarms.camera_id IS NOT NULL AND alarms.camera_id <> ''
+                  AND alarms.camera_id ILIKE known.prefix || '%'
+            """))
+            db.commit()
+            total = r1.rowcount + r2.rowcount + r3.rowcount
+            if total > 0:
+                print(f"[Startup] Backfilled aibox_id for {total} existing alarms")
+    except Exception as e:
+        print(f"[Startup] Backfill aibox_id warning: {e}")
+
     yield
 
     # Shutdown
@@ -152,6 +185,11 @@ app.include_router(storage.router)
 app.include_router(ai_boxes.router)
 app.include_router(webrtc_proxy.router)
 app.include_router(alarm_types.router)
+app.include_router(preferences.router)
+app.include_router(thresholds.router)
+app.include_router(face_database.router)
+app.include_router(modbus.router)
+app.include_router(tools.router)
 
 @app.get("/")
 def root():

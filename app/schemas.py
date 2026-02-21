@@ -725,3 +725,217 @@ class BucketStatsResponse(BaseModel):
     object_count: int
     total_size: int
     total_size_formatted: str
+
+
+# ============ System Preference Schemas ============
+
+class SystemPreferenceBase(BaseModel):
+    key: str = Field(..., max_length=128)
+    value: str = Field(default="", max_length=1024)
+    description: Optional[str] = Field(None, max_length=512)
+    category: str = Field(default="system", max_length=50)
+    value_type: str = Field(default="string", max_length=20)
+
+
+class SystemPreferenceCreate(SystemPreferenceBase):
+    aibox_id: Optional[UUID] = None
+
+
+class SystemPreferenceUpdate(BaseModel):
+    value: Optional[str] = Field(None, max_length=1024)
+    description: Optional[str] = Field(None, max_length=512)
+    category: Optional[str] = Field(None, max_length=50)
+    value_type: Optional[str] = Field(None, max_length=20)
+
+
+class SystemPreferenceResponse(SystemPreferenceBase):
+    id: UUID
+    aibox_id: Optional[UUID] = None
+    is_synced_bmapp: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class SystemPreferenceBulkUpdate(BaseModel):
+    aibox_id: Optional[UUID] = None
+    preferences: List[dict]  # [{"key": "...", "value": "..."}]
+
+
+# ============ Algorithm Threshold Schemas ============
+
+class AlgorithmThresholdBase(BaseModel):
+    algorithm_index: int
+    algorithm_name: str = Field(..., max_length=200)
+    threshold_value: float = 0.5  # No ge/le constraints: BM-APP uses pixels, negative values, etc.
+
+
+class AlgorithmThresholdCreate(AlgorithmThresholdBase):
+    aibox_id: Optional[UUID] = None
+
+
+class AlgorithmThresholdUpdate(BaseModel):
+    threshold_value: Optional[float] = None  # No ge/le constraints: allows pixels, negative values, etc.
+    algorithm_name: Optional[str] = Field(None, max_length=200)
+
+
+class AlgorithmThresholdResponse(AlgorithmThresholdBase):
+    id: UUID
+    aibox_id: Optional[UUID] = None
+    is_synced_bmapp: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AlgorithmThresholdBulkUpdate(BaseModel):
+    aibox_id: UUID
+    updates: List[dict]  # [{"id": "...", "threshold_value": 0.5}]
+
+
+# ============ Face Album Schemas ============
+
+class FaceAlbumBase(BaseModel):
+    name: str = Field(..., max_length=512)
+
+
+class FaceAlbumCreate(FaceAlbumBase):
+    aibox_id: Optional[UUID] = None
+    bmapp_id: Optional[int] = None
+
+
+class FaceAlbumUpdate(BaseModel):
+    name: Optional[str] = Field(None, max_length=512)
+
+
+class FaceAlbumResponse(FaceAlbumBase):
+    id: UUID
+    aibox_id: Optional[UUID] = None
+    bmapp_id: Optional[int] = None
+    feature_count: int
+    is_synced_bmapp: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ============ Face Feature Record Schemas ============
+
+class FaceFeatureRecordBase(BaseModel):
+    name: Optional[str] = Field(None, max_length=256)
+    jpeg_path: Optional[str] = Field(None, max_length=512)
+    minio_path: Optional[str] = Field(None, max_length=512)
+    extra_data: Optional[dict] = None
+
+
+class FaceFeatureRecordCreate(FaceFeatureRecordBase):
+    album_id: UUID
+    aibox_id: Optional[UUID] = None
+    bmapp_id: Optional[int] = None
+
+
+class FaceFeatureRecordResponse(FaceFeatureRecordBase):
+    id: UUID
+    album_id: UUID
+    aibox_id: Optional[UUID] = None
+    bmapp_id: Optional[int] = None
+    is_synced_bmapp: bool
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ============ Modbus Device Schemas ============
+
+class ModbusDeviceBase(BaseModel):
+    description: str = Field(..., max_length=256)
+    alarm_url: Optional[str] = Field(None, max_length=512)
+    port: int = Field(default=502)
+    poll_interval: float = Field(default=1.0)
+    device_path: Optional[str] = Field(None, max_length=32)
+    slave_addr: int = Field(default=1)
+    start_reg_addr: int = Field(default=0)
+    end_reg_addr: int = Field(default=0)
+    start_data: int = Field(default=0)
+    end_data: int = Field(default=0)
+    device_type: int = Field(default=0)  # 0=input, 1=output
+    is_active: bool = Field(default=True)
+
+
+class ModbusDeviceCreate(ModbusDeviceBase):
+    aibox_id: Optional[UUID] = None
+    bmapp_id: Optional[int] = None
+
+
+class ModbusDeviceUpdate(BaseModel):
+    description: Optional[str] = Field(None, max_length=256)
+    alarm_url: Optional[str] = Field(None, max_length=512)
+    port: Optional[int] = None
+    poll_interval: Optional[float] = None
+    device_path: Optional[str] = Field(None, max_length=32)
+    slave_addr: Optional[int] = None
+    start_reg_addr: Optional[int] = None
+    end_reg_addr: Optional[int] = None
+    start_data: Optional[int] = None
+    end_data: Optional[int] = None
+    device_type: Optional[int] = None
+    is_active: Optional[bool] = None
+
+
+class ModbusDeviceResponse(ModbusDeviceBase):
+    id: UUID
+    aibox_id: Optional[UUID] = None
+    bmapp_id: Optional[int] = None
+    is_synced_bmapp: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+# ============ Tools / BM-APP Operation Schemas ============
+
+class PingRequest(BaseModel):
+    host: str = Field(..., max_length=255)
+    count: int = Field(default=4, ge=1, le=10)
+
+
+class PingResult(BaseModel):
+    host: str
+    success: bool
+    output: Optional[str] = None
+    error: Optional[str] = None
+
+
+class OnvifDevice(BaseModel):
+    ip: str
+    port: int
+    manufacturer: Optional[str] = None
+    model: Optional[str] = None
+    name: Optional[str] = None
+    profiles: Optional[List[str]] = None
+    extra_data: Optional[dict] = None
+
+
+class SystemInfo(BaseModel):
+    cpu_usage: Optional[float] = None
+    memory_usage: Optional[float] = None
+    disk_usage: Optional[float] = None
+    uptime: Optional[str] = None
+    version: Optional[str] = None
+    extra_data: Optional[dict] = None
+
+
+class SyncResult(BaseModel):
+    success: bool
+    synced_count: int
+    message: str
+    errors: List[str] = []
