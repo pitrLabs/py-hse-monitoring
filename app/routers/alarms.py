@@ -16,6 +16,7 @@ from app.auth import get_current_user
 from app.config import settings
 from app.services.bmapp import add_client, remove_client, broadcast_alarm, BmAppAlarmListener
 from app.services.minio_storage import get_minio_storage
+from app.services.audit_logger import log_audit
 
 router = APIRouter(prefix="/alarms", tags=["alarms"])
 
@@ -568,6 +569,7 @@ def get_alarm(
 @router.patch("/{alarm_id}/acknowledge", response_model=AlarmResponse)
 def acknowledge_alarm(
     alarm_id: UUID,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -576,17 +578,33 @@ def acknowledge_alarm(
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
 
+    old_status = alarm.status
     alarm.status = "acknowledged"
     alarm.acknowledged_at = datetime.utcnow()
     alarm.acknowledged_by_id = current_user.id
     db.commit()
     db.refresh(alarm)
+
+    # Log alarm acknowledgement
+    log_audit(
+        db=db,
+        user=current_user,
+        action="alarm.acknowledged",
+        resource_type="alarm",
+        resource_id=alarm.id,
+        resource_name=f"{alarm.alarm_type} - {alarm.camera_name}",
+        old_values={"status": old_status},
+        new_values={"status": "acknowledged"},
+        request=request
+    )
+
     return _add_presigned_urls(alarm)
 
 
 @router.patch("/{alarm_id}/resolve", response_model=AlarmResponse)
 def resolve_alarm(
     alarm_id: UUID,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -595,17 +613,33 @@ def resolve_alarm(
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
 
+    old_status = alarm.status
     alarm.status = "resolved"
     alarm.resolved_at = datetime.utcnow()
     alarm.resolved_by_id = current_user.id
     db.commit()
     db.refresh(alarm)
+
+    # Log alarm resolution
+    log_audit(
+        db=db,
+        user=current_user,
+        action="alarm.resolved",
+        resource_type="alarm",
+        resource_id=alarm.id,
+        resource_name=f"{alarm.alarm_type} - {alarm.camera_name}",
+        old_values={"status": old_status},
+        new_values={"status": "resolved"},
+        request=request
+    )
+
     return _add_presigned_urls(alarm)
 
 
 @router.delete("/{alarm_id}")
 def delete_alarm(
     alarm_id: UUID,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
@@ -613,6 +647,23 @@ def delete_alarm(
     alarm = db.query(Alarm).filter(Alarm.id == alarm_id).first()
     if not alarm:
         raise HTTPException(status_code=404, detail="Alarm not found")
+
+    # Log before deletion
+    log_audit(
+        db=db,
+        user=current_user,
+        action="alarm.deleted",
+        resource_type="alarm",
+        resource_id=alarm.id,
+        resource_name=f"{alarm.alarm_type} - {alarm.camera_name}",
+        old_values={
+            "alarm_type": alarm.alarm_type,
+            "camera_name": alarm.camera_name,
+            "status": alarm.status,
+            "timestamp": str(alarm.timestamp)
+        },
+        request=request
+    )
 
     db.delete(alarm)
     db.commit()

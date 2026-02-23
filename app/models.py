@@ -2,7 +2,7 @@ from datetime import datetime
 from typing import List
 import uuid
 
-from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Table, Text
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Index, Integer, String, Table, Text
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -518,3 +518,44 @@ class LocalVideo(Base):
 
     # Relationships
     uploaded_by: Mapped["User | None"] = relationship("User", lazy="selectin")
+
+
+class AuditLog(Base):
+    """Audit log for tracking all significant system actions"""
+    __tablename__ = "audit_logs"
+
+    # Primary Info
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4, index=True)
+    timestamp: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    # Actor (WHO)
+    user_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), index=True)
+    username: Mapped[str] = mapped_column(String(50), nullable=False)  # Denormalized - for when user is deleted
+    user_email: Mapped[str] = mapped_column(String(100), nullable=False)  # Denormalized
+
+    # Action (WHAT)
+    action: Mapped[str] = mapped_column(String(100), nullable=False, index=True)  # "user.created", "alarm.deleted", etc
+    resource_type: Mapped[str] = mapped_column(String(50), nullable=False, index=True)  # "user", "alarm", "video_source"
+    resource_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))  # ID of affected resource
+    resource_name: Mapped[str | None] = mapped_column(String(200))  # Denormalized name for display
+
+    # Context (WHERE/HOW)
+    ip_address: Mapped[str | None] = mapped_column(String(45))  # IPv6 max 45 chars
+    user_agent: Mapped[str | None] = mapped_column(String(500))  # Browser/API client info
+    endpoint: Mapped[str | None] = mapped_column(String(200))  # API endpoint called, e.g. "/video-sources/{id}"
+    method: Mapped[str | None] = mapped_column(String(10))  # HTTP method: GET, POST, PUT, DELETE
+
+    # Changes (BEFORE/AFTER)
+    old_values: Mapped[dict | None] = mapped_column(JSONB)  # State before change
+    new_values: Mapped[dict | None] = mapped_column(JSONB)  # State after change
+    changes_summary: Mapped[str | None] = mapped_column(String(1000))  # Human-readable summary
+
+    # Result
+    status: Mapped[str] = mapped_column(String(20), default="success", nullable=False, index=True)  # "success" | "failed" | "partial"
+    error_message: Mapped[str | None] = mapped_column(String(1000))  # If failed
+
+    # Additional Context
+    extra_metadata: Mapped[dict | None] = mapped_column(JSONB)  # Extra context (e.g., bulk operation count)
+
+    # Relationships
+    user: Mapped["User | None"] = relationship("User", lazy="selectin")

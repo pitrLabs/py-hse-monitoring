@@ -5,7 +5,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.routers import auth, users, roles, video_sources, ai_tasks
 from app.routers import alarms, locations, recordings, camera_status, analytics
 from app.routers import local_videos, storage, ai_boxes, webrtc_proxy, alarm_types
-from app.routers import preferences, thresholds, face_database, modbus, tools
+from app.routers import preferences, thresholds, face_database, modbus, tools, audit_logs
 from app.services.bmapp import start_alarm_listener, stop_alarm_listener
 from app.services.camera_status import start_camera_status_poller, stop_camera_status_poller
 from app.services.analytics_sync import start_analytics_sync, stop_analytics_sync
@@ -190,6 +190,7 @@ app.include_router(thresholds.router)
 app.include_router(face_database.router)
 app.include_router(modbus.router)
 app.include_router(tools.router)
+app.include_router(audit_logs.router)
 
 @app.get("/")
 def root():

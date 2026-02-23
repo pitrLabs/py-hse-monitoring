@@ -939,3 +939,44 @@ class SyncResult(BaseModel):
     synced_count: int
     message: str
     errors: List[str] = []
+
+
+# ============ Audit Log Schemas ============
+
+class AuditLogResponse(BaseModel):
+    """Audit log entry response"""
+    id: UUID
+    timestamp: datetime
+    user_id: Optional[UUID] = None
+    username: str
+    user_email: str
+    action: str
+    resource_type: str
+    resource_id: Optional[UUID] = None
+    resource_name: Optional[str] = None
+    ip_address: Optional[str] = None
+    user_agent: Optional[str] = None
+    endpoint: Optional[str] = None
+    method: Optional[str] = None
+    old_values: Optional[dict] = None
+    new_values: Optional[dict] = None
+    changes_summary: Optional[str] = None
+    status: str
+    error_message: Optional[str] = None
+    extra_metadata: Optional[dict] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AuditLogStats(BaseModel):
+    """Statistics for audit logs dashboard"""
+    total_events: int
+    success_count: int
+    failed_count: int
+    failed_logins: int
+    by_action: List[dict]
+    by_resource: List[dict]
+    top_users: List[dict]
+    events_per_day: List[dict]
+    date_range: dict

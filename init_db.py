@@ -45,6 +45,10 @@ def create_default_permissions(db: Session):
         # Alarms permissions
         {"name": "alarms.read", "resource": "alarms", "action": "read", "description": "View alarms"},
         {"name": "alarms.update", "resource": "alarms", "action": "update", "description": "Acknowledge/resolve alarms"},
+
+        # Audit logs permissions
+        {"name": "audit-logs.read", "resource": "audit-logs", "action": "read", "description": "View audit logs"},
+        {"name": "audit-logs.export", "resource": "audit-logs", "action": "export", "description": "Export audit logs to CSV/JSON"},
     ]
     
     created_permissions = []

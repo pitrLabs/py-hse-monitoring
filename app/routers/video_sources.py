@@ -1,6 +1,6 @@
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import get_current_user, get_current_superuser
@@ -15,6 +15,7 @@ from app.services.bmapp_client import (
     get_bmapp_client
 )
 from app.config import settings
+from app.services.audit_logger import log_audit
 
 router = APIRouter(prefix="/video-sources", tags=["Video Sources"])
 
@@ -91,6 +92,7 @@ def get_video_source(
 @router.post("/", response_model=schemas.VideoSourceResponse, status_code=status.HTTP_201_CREATED)
 async def create_video_source(
     video_source_data: schemas.VideoSourceCreate,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -121,6 +123,25 @@ async def create_video_source(
     db.add(db_video_source)
     db.commit()
     db.refresh(db_video_source)
+
+    # Log video source creation
+    log_audit(
+        db=db,
+        user=current_user,
+        action="video_source.created",
+        resource_type="video_source",
+        resource_id=db_video_source.id,
+        resource_name=db_video_source.name,
+        new_values={
+            "name": db_video_source.name,
+            "stream_name": db_video_source.stream_name,
+            "url": db_video_source.url,
+            "source_type": db_video_source.source_type,
+            "is_active": db_video_source.is_active,
+            "aibox_id": str(db_video_source.aibox_id) if db_video_source.aibox_id else None
+        },
+        request=request
+    )
 
     # Sync with MediaMTX in background
     if db_video_source.is_active:
@@ -153,6 +174,7 @@ async def create_video_source(
 async def update_video_source(
     video_source_id: UUID,
     video_source_update: schemas.VideoSourceUpdate,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -165,6 +187,16 @@ async def update_video_source(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Video source not found"
         )
+
+    # Capture old values for audit
+    old_values = {
+        "name": video_source.name,
+        "stream_name": video_source.stream_name,
+        "url": video_source.url,
+        "source_type": video_source.source_type,
+        "is_active": video_source.is_active,
+        "aibox_id": str(video_source.aibox_id) if video_source.aibox_id else None
+    }
 
     old_stream_name = video_source.stream_name
     old_url = video_source.url
@@ -211,6 +243,26 @@ async def update_video_source(
 
     db.commit()
     db.refresh(video_source)
+
+    # Log video source update
+    log_audit(
+        db=db,
+        user=current_user,
+        action="video_source.updated",
+        resource_type="video_source",
+        resource_id=video_source.id,
+        resource_name=video_source.name,
+        old_values=old_values,
+        new_values={
+            "name": video_source.name,
+            "stream_name": video_source.stream_name,
+            "url": video_source.url,
+            "source_type": video_source.source_type,
+            "is_active": video_source.is_active,
+            "aibox_id": str(video_source.aibox_id) if video_source.aibox_id else None
+        },
+        request=request
+    )
 
     # Get AI Box URL if assigned
     aibox_api_url = None
@@ -280,6 +332,7 @@ async def update_video_source(
 @router.delete("/{video_source_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_video_source(
     video_source_id: UUID,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -303,6 +356,25 @@ async def delete_video_source(
         if aibox and aibox.api_url:
             aibox_api_url = aibox.api_url
 
+    # Log before deletion
+    log_audit(
+        db=db,
+        user=current_user,
+        action="video_source.deleted",
+        resource_type="video_source",
+        resource_id=video_source.id,
+        resource_name=video_source.name,
+        old_values={
+            "name": video_source.name,
+            "stream_name": video_source.stream_name,
+            "url": video_source.url,
+            "source_type": video_source.source_type,
+            "is_active": video_source.is_active,
+            "aibox_id": str(video_source.aibox_id) if video_source.aibox_id else None
+        },
+        request=request
+    )
+
     db.delete(video_source)
     db.commit()
 
@@ -322,6 +394,7 @@ async def delete_video_source(
 @router.patch("/{video_source_id}/toggle", response_model=schemas.VideoSourceResponse)
 async def toggle_video_source(
     video_source_id: UUID,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -335,9 +408,24 @@ async def toggle_video_source(
             detail="Video source not found"
         )
 
+    old_is_active = video_source.is_active
     video_source.is_active = not video_source.is_active
     db.commit()
     db.refresh(video_source)
+
+    # Log toggle action
+    log_audit(
+        db=db,
+        user=current_user,
+        action="video_source.toggled",
+        resource_type="video_source",
+        resource_id=video_source.id,
+        resource_name=video_source.name,
+        old_values={"is_active": old_is_active},
+        new_values={"is_active": video_source.is_active},
+        changes_summary=f"Video source {'activated' if video_source.is_active else 'deactivated'}",
+        request=request
+    )
 
     # Sync with MediaMTX in background
     if video_source.is_active:
@@ -450,6 +538,7 @@ async def get_bmapp_abilities(
 
 @router.post("/import-from-bmapp", status_code=status.HTTP_200_OK)
 async def import_from_bmapp(
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -577,6 +666,24 @@ async def import_from_bmapp(
     active_sources = db.query(VideoSource).filter(VideoSource.is_active == True).all()
     for vs in active_sources:
         background_tasks.add_task(add_stream_path, vs.stream_name, vs.url)
+
+    # Log bulk import operation
+    log_audit(
+        db=db,
+        user=current_user,
+        action="video_source.bulk_import",
+        resource_type="video_source",
+        changes_summary=f"Imported {imported}, updated {updated}, removed {removed}, skipped {skipped} video sources",
+        new_values={
+            "imported": imported,
+            "updated": updated,
+            "removed": removed,
+            "skipped": skipped,
+            "total_aiboxes": len(aiboxes),
+            "has_errors": len(errors) > 0
+        },
+        request=request
+    )
 
     return {
         "message": f"Import completed: {imported} imported, {updated} updated, {removed} removed, {skipped} unchanged",

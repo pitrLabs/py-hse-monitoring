@@ -5,7 +5,7 @@ Manages AI detection tasks in the database and syncs with BM-APP
 from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, BackgroundTasks, Request
 from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import get_current_user, get_current_superuser
@@ -13,6 +13,7 @@ from app.database import get_db
 from app.models import AITask, VideoSource, User
 from app.config import settings
 from app.services.bmapp_client import get_bmapp_client
+from app.services.audit_logger import log_audit
 
 router = APIRouter(prefix="/ai-tasks", tags=["AI Tasks"])
 
@@ -135,6 +136,7 @@ def get_ai_task(
 @router.post("/", response_model=schemas.AITaskResponse, status_code=status.HTTP_201_CREATED)
 async def create_ai_task(
     task_data: schemas.AITaskCreate,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -182,6 +184,24 @@ async def create_ai_task(
     db.commit()
     db.refresh(db_task)
 
+    # Log AI task creation
+    log_audit(
+        db=db,
+        user=current_user,
+        action="ai_task.created",
+        resource_type="ai_task",
+        resource_id=db_task.id,
+        resource_name=db_task.task_name,
+        new_values={
+            "task_name": db_task.task_name,
+            "video_source": video_source.name,
+            "algorithms": db_task.algorithms,
+            "status": db_task.status,
+            "auto_start": task_data.auto_start
+        },
+        request=request
+    )
+
     # Sync to BM-APP in background
     if settings.bmapp_enabled:
         # Create a new session for background task
@@ -223,6 +243,7 @@ async def create_ai_task(
 async def update_ai_task(
     task_id: UUID,
     task_update: schemas.AITaskUpdate,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -236,6 +257,13 @@ async def update_ai_task(
             detail="AI task not found"
         )
 
+    # Capture old values for audit
+    old_values = {
+        "algorithms": task.algorithms,
+        "description": task.description,
+        "status": task.status
+    }
+
     # Update fields
     if task_update.algorithms is not None:
         task.algorithms = task_update.algorithms
@@ -248,6 +276,23 @@ async def update_ai_task(
 
     db.commit()
     db.refresh(task)
+
+    # Log AI task update
+    log_audit(
+        db=db,
+        user=current_user,
+        action="ai_task.updated",
+        resource_type="ai_task",
+        resource_id=task.id,
+        resource_name=task.task_name,
+        old_values=old_values,
+        new_values={
+            "algorithms": task.algorithms,
+            "description": task.description,
+            "status": task.status
+        },
+        request=request
+    )
 
     # Re-sync to BM-APP if algorithms changed
     if task_update.algorithms is not None and settings.bmapp_enabled:
@@ -278,6 +323,7 @@ async def update_ai_task(
 @router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_ai_task(
     task_id: UUID,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -292,6 +338,23 @@ async def delete_ai_task(
         )
 
     task_name = task.task_name
+
+    # Log before deletion
+    log_audit(
+        db=db,
+        user=current_user,
+        action="ai_task.deleted",
+        resource_type="ai_task",
+        resource_id=task.id,
+        resource_name=task.task_name,
+        old_values={
+            "task_name": task.task_name,
+            "algorithms": task.algorithms,
+            "status": task.status,
+            "video_source_id": str(task.video_source_id)
+        },
+        request=request
+    )
 
     db.delete(task)
     db.commit()
@@ -314,6 +377,7 @@ async def delete_ai_task(
 async def control_ai_task(
     task_id: UUID,
     control: schemas.AITaskControl,
+    request: Request,
     background_tasks: BackgroundTasks,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
@@ -341,6 +405,7 @@ async def control_ai_task(
         )
 
     action = control.action
+    old_status = task.status
 
     # Handle restart as stop + start
     if action == "restart":
@@ -400,6 +465,20 @@ async def control_ai_task(
 
     db.commit()
     db.refresh(task)
+
+    # Log task control action
+    log_audit(
+        db=db,
+        user=current_user,
+        action=f"ai_task.{action}",
+        resource_type="ai_task",
+        resource_id=task.id,
+        resource_name=task.task_name,
+        old_values={"status": old_status},
+        new_values={"status": task.status, "action": action},
+        changes_summary=f"AI task {action}",
+        request=request
+    )
 
     return task
 
@@ -555,6 +634,7 @@ async def get_preview_channels(
 
 @router.post("/import-from-bmapp", status_code=status.HTTP_200_OK)
 async def import_tasks_from_bmapp(
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
 ):
@@ -640,6 +720,22 @@ async def import_tasks_from_bmapp(
         except Exception as e:
             db.rollback()
             errors.append(f"Failed to import task '{task_name}': {str(e)}")
+
+    # Log bulk import operation
+    log_audit(
+        db=db,
+        user=current_user,
+        action="ai_task.bulk_import",
+        resource_type="ai_task",
+        changes_summary=f"Imported {imported}, skipped {skipped} AI tasks from BM-APP",
+        new_values={
+            "imported": imported,
+            "skipped": skipped,
+            "total_from_bmapp": len(task_list),
+            "has_errors": len(errors) > 0
+        },
+        request=request
+    )
 
     return {
         "message": f"Import completed",

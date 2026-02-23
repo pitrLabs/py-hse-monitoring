@@ -1,6 +1,6 @@
 from typing import List
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import (
@@ -10,6 +10,7 @@ from app.auth import (
 )
 from app.database import get_db
 from app.models import User, Role, VideoSource
+from app.services.audit_logger import log_audit
 
 router = APIRouter(prefix="/users", tags=["User Management"])
 
@@ -39,8 +40,12 @@ def list_user_sessions(db: Session = Depends(get_db),
 
 
 @router.post("/{user_id}/force-logout")
-def force_logout_user(user_id: UUID, db: Session = Depends(get_db),
-                      current_user: User = Depends(require_permission("users", "update"))):
+def force_logout_user(
+    user_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("users", "update"))
+):
     """Force logout a user by clearing their active session (admin only)"""
     user = db.query(User).filter(User.id == user_id).first()
 
@@ -63,6 +68,18 @@ def force_logout_user(user_id: UUID, db: Session = Depends(get_db),
     # Clear the active session
     user.active_session_id = None
     db.commit()
+
+    # Log force logout
+    log_audit(
+        db=db,
+        user=current_user,
+        action="user.force_logout",
+        resource_type="user",
+        resource_id=user.id,
+        resource_name=user.username,
+        changes_summary=f"Admin {current_user.username} force logged out {user.username}",
+        request=request
+    )
 
     return {"message": f"User {user.username} has been logged out successfully"}
 
@@ -89,8 +106,12 @@ def get_user(user_id: UUID, db: Session = Depends(get_db),
 
 
 @router.post("/", response_model=schemas.UserResponse, status_code=status.HTTP_201_CREATED)
-def create_user(user_data: schemas.UserCreate, db: Session = Depends(get_db),
-                _: User = Depends(require_permission("users", "create"))):
+def create_user(
+    user_data: schemas.UserCreate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("users", "create"))
+):
     if db.query(User).filter(User.username == user_data.username).first():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Username already registered")
 
@@ -108,22 +129,54 @@ def create_user(user_data: schemas.UserCreate, db: Session = Depends(get_db),
     if user_data.role_ids:
         roles = db.query(Role).filter(Role.id.in_(user_data.role_ids)).all()
         db_user.roles = roles
-    
+
     db.add(db_user)
     db.commit()
     db.refresh(db_user)
-    
+
+    # Log user creation
+    log_audit(
+        db=db,
+        user=current_user,
+        action="user.created",
+        resource_type="user",
+        resource_id=db_user.id,
+        resource_name=db_user.username,
+        new_values={
+            "username": db_user.username,
+            "email": db_user.email,
+            "full_name": db_user.full_name,
+            "is_superuser": db_user.is_superuser,
+            "role_count": len(db_user.roles)
+        },
+        request=request
+    )
+
     return db_user
 
 
 @router.put("/{user_id}", response_model=schemas.UserResponse)
-def update_user(user_id: UUID, user_update: schemas.UserUpdate, db: Session = Depends(get_db),
-                _: User = Depends(require_permission("users", "update"))):
+def update_user(
+    user_id: UUID,
+    user_update: schemas.UserUpdate,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("users", "update"))
+):
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
-    
+
+    # Capture old values
+    old_values = {
+        "email": user.email,
+        "full_name": user.full_name,
+        "is_active": user.is_active,
+        "is_superuser": user.is_superuser,
+        "role_count": len(user.roles)
+    }
+
     if user_update.email is not None:
         existing_user = db.query(User).filter(User.email == user_update.email,
                                               User.id != user_id).first()
@@ -131,13 +184,15 @@ def update_user(user_id: UUID, user_update: schemas.UserUpdate, db: Session = De
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
         user.email = user_update.email
-    
+
     if user_update.full_name is not None:
         user.full_name = user_update.full_name
-    
+
+    password_changed = False
     if user_update.password is not None:
         user.hashed_password = get_password_hash(user_update.password)
-    
+        password_changed = True
+
     if user_update.is_active is not None:
         user.is_active = user_update.is_active
 
@@ -147,20 +202,65 @@ def update_user(user_id: UUID, user_update: schemas.UserUpdate, db: Session = De
     if user_update.role_ids is not None:
         roles = db.query(Role).filter(Role.id.in_(user_update.role_ids)).all()
         user.roles = roles
-    
+
     db.commit()
     db.refresh(user)
-    
+
+    # Capture new values
+    new_values = {
+        "email": user.email,
+        "full_name": user.full_name,
+        "is_active": user.is_active,
+        "is_superuser": user.is_superuser,
+        "role_count": len(user.roles),
+        "password_changed": password_changed
+    }
+
+    # Log user update
+    log_audit(
+        db=db,
+        user=current_user,
+        action="user.updated",
+        resource_type="user",
+        resource_id=user.id,
+        resource_name=user.username,
+        old_values=old_values,
+        new_values=new_values,
+        request=request
+    )
+
     return user
 
 
 @router.delete("/{user_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_user(user_id: UUID, db: Session = Depends(get_db),
-                _: User = Depends(require_permission("users", "delete"))):
+def delete_user(
+    user_id: UUID,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(require_permission("users", "delete"))
+):
     user = db.query(User).filter(User.id == user_id).first()
 
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found")
+
+    # Log before deletion (user will be gone after delete)
+    log_audit(
+        db=db,
+        user=current_user,
+        action="user.deleted",
+        resource_type="user",
+        resource_id=user.id,
+        resource_name=user.username,
+        old_values={
+            "username": user.username,
+            "email": user.email,
+            "full_name": user.full_name,
+            "is_superuser": user.is_superuser,
+            "role_count": len(user.roles)
+        },
+        request=request
+    )
 
     db.delete(user)
     db.commit()
