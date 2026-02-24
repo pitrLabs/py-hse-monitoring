@@ -211,6 +211,8 @@ class VideoSourceResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
     created_by_id: Optional[UUID] = None
+    # Include AIBox info
+    aibox: Optional["AIBoxResponse"] = None
 
     class Config:
         from_attributes = True

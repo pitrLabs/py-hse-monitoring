@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app import schemas
 from app.auth import get_current_user, get_current_superuser
 from app.database import get_db
-from app.models import AITask, VideoSource, User
+from app.models import AITask, VideoSource, User, AIBox
 from app.config import settings
 from app.services.bmapp_client import get_bmapp_client
 from app.services.audit_logger import log_audit
@@ -638,12 +638,13 @@ async def import_tasks_from_bmapp(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_superuser)
 ):
-    """Import all AI tasks from BM-APP into our database.
+    """Import all AI tasks from ALL AI Boxes into our database.
 
     This will:
-    1. Fetch all tasks from BM-APP
-    2. Match tasks with existing video sources by MediaName
-    3. Create AITask entries in database (skip if task_name exists)
+    1. Loop through all active AI Boxes
+    2. For each box, fetch all tasks from its BM-APP instance
+    3. Match tasks with existing video sources by MediaName
+    4. Create AITask entries in database (skip if task_name exists)
 
     Prerequisites: Video sources should be imported first via /video-sources/import-from-bmapp
 
@@ -655,71 +656,87 @@ async def import_tasks_from_bmapp(
             detail="BM-APP integration is disabled"
         )
 
-    try:
-        client = get_bmapp_client()
-        task_list = await client.get_task_list()
-    except Exception as e:
+    # Get all active AI Boxes
+    ai_boxes = db.query(AIBox).filter(AIBox.is_active == True).all()
+    if not ai_boxes:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to fetch tasks from BM-APP: {str(e)}"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No active AI Boxes found. Create AI Boxes first."
         )
 
     imported = 0
     skipped = 0
     errors = []
+    total_from_bmapp = 0
 
-    for task in task_list:
-        task_name = task.get("AlgTaskSession", "")
-        media_name = task.get("MediaName", "")
-        task_desc = task.get("TaskDesc", "")
-        user_data = task.get("UserData", {})
-        method_config = user_data.get("MethodConfig", [])
-        task_status_info = task.get("AlgTaskStatus", {})
-
-        if not task_name:
-            errors.append(f"Invalid task entry (no name): {task}")
-            continue
-
-        # Check if task already exists
-        existing_task = db.query(AITask).filter(AITask.task_name == task_name).first()
-        if existing_task:
-            skipped += 1
-            continue
-
-        # Find matching video source by stream_name (MediaName)
-        video_source = db.query(VideoSource).filter(VideoSource.stream_name == media_name).first()
-        if not video_source:
-            errors.append(f"Task '{task_name}' - no matching video source for media '{media_name}'")
-            continue
-
-        # Determine status from BM-APP status
-        status_type = task_status_info.get("type", 0)
-        if status_type == 2:
-            db_status = "running"
-        elif status_type == 1:
-            db_status = "pending"
-        else:
-            db_status = "stopped"
-
-        # Create new AI task
+    # Loop through each AI Box
+    for aibox in ai_boxes:
         try:
-            db_task = AITask(
-                task_name=task_name,
-                video_source_id=video_source.id,
-                algorithms=method_config if method_config else None,
-                description=task_desc,
-                status=db_status,
-                is_synced_bmapp=True,
-                created_by_id=current_user.id
-            )
-            db.add(db_task)
-            db.commit()
-            db.refresh(db_task)
-
-            imported += 1
+            # Get tasks from this box's BM-APP instance
+            from app.services.bmapp_client import BmAppClient
+            box_client = BmAppClient(base_url=aibox.api_url)
+            task_list = await box_client.get_task_list()
+            total_from_bmapp += len(task_list)
         except Exception as e:
-            db.rollback()
-            errors.append(f"Failed to import task '{task_name}': {str(e)}")
+            errors.append(f"Box '{aibox.name}': Failed to fetch tasks - {str(e)}")
+            continue
+
+        # Import tasks from this box
+        for task in task_list:
+            task_name = task.get("AlgTaskSession", "")
+            media_name = task.get("MediaName", "")
+            task_desc = task.get("TaskDesc", "")
+            user_data = task.get("UserData", {})
+            method_config = user_data.get("MethodConfig", [])
+            task_status_info = task.get("AlgTaskStatus", {})
+
+            if not task_name:
+                errors.append(f"Box '{aibox.name}': Invalid task entry (no name): {task}")
+                continue
+
+            # Check if task already exists
+            existing_task = db.query(AITask).filter(AITask.task_name == task_name).first()
+            if existing_task:
+                skipped += 1
+                continue
+
+            # Find matching video source by stream_name (MediaName) for this specific AI Box
+            video_source = db.query(VideoSource).filter(
+                VideoSource.stream_name == media_name,
+                VideoSource.aibox_id == aibox.id
+            ).first()
+            if not video_source:
+                errors.append(f"Box '{aibox.name}': Task '{task_name}' - no matching video source for media '{media_name}'")
+                continue
+
+            # Determine status from BM-APP status
+            status_type = task_status_info.get("type", 0)
+            if status_type == 2:
+                db_status = "running"
+            elif status_type == 1:
+                db_status = "pending"
+            else:
+                db_status = "stopped"
+
+            # Create new AI task
+            try:
+                db_task = AITask(
+                    task_name=task_name,
+                    video_source_id=video_source.id,
+                    algorithms=method_config if method_config else None,
+                    description=task_desc,
+                    status=db_status,
+                    is_synced_bmapp=True,
+                    created_by_id=current_user.id
+                )
+                db.add(db_task)
+                db.commit()
+                db.refresh(db_task)
+
+                imported += 1
+            except Exception as e:
+                db.rollback()
+                errors.append(f"Box '{aibox.name}': Failed to import task '{task_name}' - {str(e)}")
 
     # Log bulk import operation
     log_audit(
@@ -727,20 +744,22 @@ async def import_tasks_from_bmapp(
         user=current_user,
         action="ai_task.bulk_import",
         resource_type="ai_task",
-        changes_summary=f"Imported {imported}, skipped {skipped} AI tasks from BM-APP",
+        changes_summary=f"Imported {imported}, skipped {skipped} AI tasks from {len(ai_boxes)} AI Boxes",
         new_values={
             "imported": imported,
             "skipped": skipped,
-            "total_from_bmapp": len(task_list),
+            "total_from_bmapp": total_from_bmapp,
+            "num_boxes": len(ai_boxes),
             "has_errors": len(errors) > 0
         },
         request=request
     )
 
     return {
-        "message": f"Import completed",
+        "message": f"Import completed from {len(ai_boxes)} AI Boxes",
         "imported": imported,
         "skipped": skipped,
-        "total_from_bmapp": len(task_list),
+        "total_from_bmapp": total_from_bmapp,
+        "num_boxes": len(ai_boxes),
         "errors": errors if errors else None
     }

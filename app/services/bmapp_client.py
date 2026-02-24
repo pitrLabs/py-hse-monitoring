@@ -10,8 +10,14 @@ from app.config import settings
 class BmAppClient:
     """Client for BM-APP REST API"""
 
-    def __init__(self):
-        self.base_url = settings.bmapp_api_url.rstrip('/')
+    def __init__(self, base_url: Optional[str] = None):
+        """
+        Initialize BM-APP client.
+
+        Args:
+            base_url: Optional custom base URL. If not provided, uses settings.bmapp_api_url
+        """
+        self.base_url = (base_url or settings.bmapp_api_url).rstrip('/')
         self.timeout = 30.0
 
     async def _request(self, endpoint: str, data: dict = None) -> dict:
