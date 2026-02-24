@@ -5,7 +5,7 @@ View-only access to audit logs with advanced filtering and export capabilities
 from typing import List, Optional
 from uuid import UUID
 from datetime import datetime, timedelta
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Response, Request
 from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import desc, and_, or_, func
@@ -16,7 +16,8 @@ import io
 from app.database import get_db
 from app.models import User, AuditLog
 from app.auth import get_current_user, require_permission
-from app.schemas import AuditLogResponse, AuditLogStats
+from app.schemas import AuditLogResponse, AuditLogStats, PageViewTrack
+from app.services.audit_logger import log_audit
 
 router = APIRouter(prefix="/audit-logs", tags=["Audit Logs"])
 
@@ -401,3 +402,31 @@ def export_audit_logs_json(
         media_type="application/json",
         headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
+
+
+@router.post("/track/page-view", status_code=201)
+def track_page_view(
+    data: PageViewTrack,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """
+    Track user page navigation.
+    Called automatically by frontend when user navigates to a new page.
+    """
+    log_audit(
+        db=db,
+        user=current_user,
+        action="page.view",
+        resource_type="page",
+        resource_name=data.page_title,
+        extra_metadata={
+            "page_path": data.page_path,
+            "page_title": data.page_title,
+            "referrer": request.headers.get("referer")
+        },
+        request=request
+    )
+
+    return {"message": "Page view tracked"}

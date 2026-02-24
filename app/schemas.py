@@ -980,3 +980,9 @@ class AuditLogStats(BaseModel):
     top_users: List[dict]
     events_per_day: List[dict]
     date_range: dict
+
+
+class PageViewTrack(BaseModel):
+    """Track user page navigation"""
+    page_path: str
+    page_title: str

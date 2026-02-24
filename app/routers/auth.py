@@ -42,6 +42,13 @@ def login(
 ):
     user = authenticate_user(db, form_data.username, form_data.password)
     if not user:
+        # Check if user exists to provide more specific error
+        existing_user = db.query(User).filter(User.username == form_data.username).first()
+        if existing_user:
+            error_detail = f"Invalid password for user '{form_data.username}'"
+        else:
+            error_detail = f"User '{form_data.username}' not found in system"
+
         # Log failed login attempt
         log_audit(
             db=db,
@@ -50,7 +57,7 @@ def login(
             resource_type="user",
             resource_name=form_data.username,
             status="failed",
-            error_message="Invalid credentials",
+            error_message=error_detail,
             request=request
         )
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED,
